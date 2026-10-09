@@ -120,6 +120,29 @@ const account = client.createAccount({
 `account.frontierConnection` 返回当前 Frontier 长连接实例（未连接时为 `undefined`），重连会换成新实例；
 宿主可以监听它的 `protobuf` 事件并用导出的 `pushFromResponse` 解码，按实例身份把观察绑定到同一条连接。
 
+## 资料编辑
+
+账号上线后可以修改简介、昵称和头像。每次调用只提交一个字段，与抖音资料编辑框一致：
+
+```ts
+const bio = await account.setSignature('新的简介');      // 空字符串清空简介
+const name = await account.setNickname('新昵称');        // 1–20 个字符
+const avatar = await account.setAvatar(imageBytes);      // jpeg/png/webp/gif，最大 20 MiB
+const uploaded = await account.uploadAvatar(imageBytes); // 只上传，不修改资料
+```
+
+- 返回的 `statusCode` 为 0，表示服务端已回显新值。服务端返回成功但没有回显请求的值时，
+  结果为 `PROFILE_UNCONFIRMED`（-3）：修改可能已经生效，不要自动重试。
+- 修改受平台限频，例如简介每天最多 5 次。超出时 `statusCode` 为 `PROFILE_RATE_LIMITED`（2166），
+  `retryAt` 是服务端给出的最早重试时间（按北京时间解析）。
+- 平台要求二次验证或验证码时，抛出 `ActionChallengeError` 或 `DouyinResponseError`，不会重放修改。
+- 修改头像分两步：先通过 ImageX 上传图片（获取上传凭证 → `ApplyImageUpload` → 上传对象 →
+  `CommitImageUpload`），再提交 `avatar_uri`。`uploadAvatar()` 只执行第一步，不修改资料，也不计入资料修改额度。
+- 成功修改后，账号缓存的 `profile` 会被清空；修改昵称后 `account.nickname` 同步更新。
+
+接口格式与限频行为对照了网页端的真实请求，请求发往桌面端域名并沿用桌面端公共参数。
+桌面端会话能否直接调用这些接口、头像 ImageX 服务 ID 是否正确，尚待真实账号验收。
+
 ## 联系人与缓存
 
 | 对象 | 网络查询/刷新 | 同步选择与缓存 |

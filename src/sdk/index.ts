@@ -46,6 +46,7 @@ export type {
   OpenLoginVerificationOptions,
 } from './auth/login-verification.js';
 export { SavedSessionRequiredError, SendMessageError } from './errors.js';
+export * from '../profile/index.js';
 export { DouyinResponseError } from '../http/response.js';
 export type { ResponseFailureKind } from '../http/response.js';
 export {

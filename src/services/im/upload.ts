@@ -118,7 +118,12 @@ export function signVodRequest(options: {
   body?: Uint8Array;
   credentials: UploadCredentials;
   date: Date;
+  /** Signing scope; defaults to VOD in cn-north-1. ImageX uses `imagex`. */
+  service?: string;
+  region?: string;
 }): VodSignature {
+  const service = options.service ?? VOD_SERVICE;
+  const region = options.region ?? VOD_REGION;
   const canonicalQuery = canonicalUploadQuery(options.query);
   const amzDate = options.date.toISOString().replace(/[:-]|\.\d{3}/g, '');
   const dateStamp = amzDate.slice(0, 8);
@@ -134,11 +139,11 @@ export function signVodRequest(options: {
   const canonicalRequest = [
     options.method, '/', canonicalQuery, canonicalHeaders, signedHeaders, payloadHash,
   ].join('\n');
-  const scope = `${dateStamp}/${VOD_REGION}/${VOD_SERVICE}/aws4_request`;
+  const scope = `${dateStamp}/${region}/${service}/aws4_request`;
   const stringToSign = `AWS4-HMAC-SHA256\n${amzDate}\n${scope}\n${hashHex(canonicalRequest)}`;
   let signingKey = hmac(`AWS4${options.credentials.secretAccessKey}`, dateStamp);
-  signingKey = hmac(signingKey, VOD_REGION);
-  signingKey = hmac(signingKey, VOD_SERVICE);
+  signingKey = hmac(signingKey, region);
+  signingKey = hmac(signingKey, service);
   signingKey = hmac(signingKey, 'aws4_request');
   const signature = hmac(signingKey, stringToSign).toString('hex');
   return {

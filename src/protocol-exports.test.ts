@@ -13,6 +13,12 @@ describe('adapter extension exports', () => {
     }
   });
 
+  it('exposes profile editing from the product entry', () => {
+    for (const name of ['ProfileEditor', 'PROFILE_RATE_LIMITED', 'PROFILE_UNCONFIRMED', 'NICKNAME_MAX_LENGTH', 'parseRetryAt']) {
+      expect(sdk).toHaveProperty(name);
+    }
+  });
+
   it('exposes the saved-session error from the product entry', () => {
     const error = new sdk.SavedSessionRequiredError();
     expect(error).toBeInstanceOf(Error);

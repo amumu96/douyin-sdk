@@ -60,6 +60,7 @@ import type {
 } from '../services/im/types.js';
 import { SavedSessionRequiredError, toError } from './errors.js';
 import type { ImTransportFactory } from '../services/im/transport.js';
+import { ProfileEditor, type AvatarUpdateResult, type ProfileUpdateResult, type UploadedAvatar } from '../profile/profile-editor.js';
 import { BaseAccount } from '../base/account.js';
 import { emitEventRoutes } from './events/router.js';
 import {
@@ -147,6 +148,7 @@ export class Account extends BaseAccount {
   private readonly strangers = new Map<string, Stranger>();
   private readonly groups = new Map<string, Group>();
   private sender?: OutboundSender;
+  private profileEditor?: ProfileEditor;
   private assembler?: EventAssembler;
   private inboxFeature?: ImInboxQueries;
   private stateStore?: ImStateStore;
@@ -252,6 +254,52 @@ export class Account extends BaseAccount {
     if (!profile || profile.uid !== this.uid) throw new Error('自身资料响应缺失或身份不匹配');
     this.accountProfile = Object.freeze(profile);
     return this.accountProfile;
+  }
+
+  /**
+   * 修改简介；空字符串清空。每次修改计入平台限频（简介每天 5 次）。
+   * statusCode 为 0 表示服务端已回显新值；结果未确认时不要自动重试。
+   */
+  async setSignature(signature: string): Promise<ProfileUpdateResult> {
+    return this.updateProfile(editor => editor.setSignature(signature));
+  }
+
+  /** 修改昵称（1–20 个字符），规则同 setSignature。 */
+  async setNickname(nickname: string): Promise<ProfileUpdateResult> {
+    return this.updateProfile(editor => editor.setNickname(nickname), () => {
+      this.accountNickname = nickname;
+      this.refreshLoggerIdentity();
+    });
+  }
+
+  /** 上传图片并设为头像（jpeg/png/webp/gif，最大 20 MiB），规则同 setSignature。 */
+  async setAvatar(image: Uint8Array): Promise<AvatarUpdateResult> {
+    return this.updateProfile(editor => editor.setAvatar(image));
+  }
+
+  /** 只上传头像图片、不修改资料，返回可用的 avatar URI；不计入资料修改额度。 */
+  async uploadAvatar(image: Uint8Array): Promise<UploadedAvatar> {
+    const editor = this.requireProfileEditor();
+    return editor.uploadAvatar(image);
+  }
+
+  private requireProfileEditor(): ProfileEditor {
+    this.ensureOnline();
+    if (!this.profileEditor) throw new Error('账号未上线，请先 await account.login() 并完成登录');
+    return this.profileEditor;
+  }
+
+  private async updateProfile<T extends ProfileUpdateResult>(run: (editor: ProfileEditor) => Promise<T>, applied?: () => void): Promise<T> {
+    const editor = this.requireProfileEditor();
+    const generation = this.loginGeneration;
+    const result = await run(editor);
+    // A confirmed change makes the cached self profile stale. A late result from
+    // a previous login never updates the current account's cached identity.
+    if (result.statusCode === 0 && generation === this.loginGeneration && this.profileEditor === editor) {
+      delete this.accountProfile;
+      applied?.();
+    }
+    return result;
   }
 
   get imUid(): string | undefined {
@@ -918,6 +966,7 @@ export class Account extends BaseAccount {
       const stateStore = this.stateStore;
       this.assembler?.clear();
       delete this.sender;
+      delete this.profileEditor;
       delete this.assembler;
       delete this.inboxFeature;
       delete this.stateStore;
@@ -1350,6 +1399,7 @@ export class Account extends BaseAccount {
             ...(floatHintConfig ? { floatHintConfig } : {}),
           });
       this.sender = sender;
+      this.profileEditor = new ProfileEditor(bound.client, { platformUid: bound.platformUid, deviceId: bound.deviceId });
       this.assembler = assembler;
       if (stateStore) this.stateStore = stateStore;
       strangerSync = new StrangerSync({ im: sender.imService, ...(stateStore ? { store: stateStore } : {}),
@@ -1405,6 +1455,7 @@ export class Account extends BaseAccount {
         this.transientConversations.clear();
         this.pendingSettingExt.clear(); this.settingRefreshes.clear();
         delete this.sender;
+        delete this.profileEditor;
         delete this.assembler;
         delete this.inboxFeature;
         delete this.stateStore;

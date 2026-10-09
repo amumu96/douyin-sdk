@@ -6,6 +6,7 @@ import { ApiConnection } from '../desktop/api-connection.js';
 import { AccountStore } from '../store/account-store.js';
 import { Account, type AccountOptions } from './account.js';
 import { SavedSessionRequiredError } from './errors.js';
+import { ProfileEditor, PROFILE_RATE_LIMITED } from '../profile/profile-editor.js';
 import { ConnectionManager } from '../base/runtime/connection-manager.js';
 import { ImInboxQueries } from './messaging/inbox-queries.js';
 import { ImService } from '../services/im/service.js';
@@ -91,6 +92,32 @@ describe('Account lifecycle', () => {
     const continuation = account.continueLogin(); await online;
     await continuation; await login;
   }
+
+  describe('profile editing', () => {
+    it('requires an online account before any profile request', async () => {
+      const account = createQrAccount(false);
+      const editor = jest.spyOn(ProfileEditor.prototype, 'setSignature');
+      await expect(account.setSignature('x')).rejects.toThrow('未上线');
+      await expect(account.uploadAvatar(new Uint8Array([1]))).rejects.toThrow('未上线');
+      expect(editor).not.toHaveBeenCalled();
+    });
+
+    it('updates the cached nickname only after a confirmed change', async () => {
+      const account = createQrAccount(false);
+      await loginWithQr(account);
+      const before = account.nickname;
+      jest.spyOn(ProfileEditor.prototype, 'setNickname')
+        .mockResolvedValueOnce({ statusCode: PROFILE_RATE_LIMITED, statusMsg: 'limited' })
+        .mockResolvedValueOnce({ statusCode: 0, statusMsg: '', user: { nickname: '流萤', avatarUris: [] } });
+      await expect(account.setNickname('流萤')).resolves.toMatchObject({ statusCode: PROFILE_RATE_LIMITED });
+      expect(account.nickname).toBe(before);
+      await expect(account.setNickname('流萤')).resolves.toMatchObject({ statusCode: 0 });
+      expect(account.nickname).toBe('流萤');
+      expect(account.profile).toBeUndefined();
+      await account.logout();
+      await expect(account.setNickname('again')).rejects.toThrow('未上线');
+    });
+  });
 
   describe('adapter options', () => {
     it('saved-session-only fails with a typed error when no Session is saved and never prompts', async () => {
