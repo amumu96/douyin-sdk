@@ -29,6 +29,8 @@ export const PROFILE_UNCONFIRMED = -3;
 
 export interface ProfileClient {
   requestRaw(url: string, init: RequestInit, passportHeaders?: boolean): Promise<HttpResponse<string>>;
+  /** The guarded web commit; the desktop ApiConnection signs it with the Session's REE ticket. */
+  requestSessionTicketWeb?(url: string, init: RequestInit & { body: string }): Promise<HttpResponse<string>>;
   getUserAgent(): string;
   getDeviceId?(): string;
   getInstallId?(): string;
@@ -137,13 +139,22 @@ export class ProfileEditor {
 
   private async commit(field: 'signature' | 'nickname' | 'avatar_uri', value: string): Promise<ProfileUpdateResult> {
     const url = `${WEB_ORIGIN}${COMMIT_USER_PATH}?${this.commonParams()}`;
-    const response = await this.client.requestRaw(url, {
+    const init = {
       method: 'POST',
-      headers: { Accept: 'application/json, text/plain, */*', 'Content-Type': 'application/x-www-form-urlencoded',
-        Referer: WEB_REFERER, 'User-Agent': this.client.getUserAgent() },
+      // The web runtime's csrfWebToken rewrite supplies this public fallback
+      // marker directly (macOS Chrome observation 2026-10-10), without a token
+      // preflight. It is not the Passport CSRF cookie or an account secret.
+      headers: { Accept: 'application/json, text/plain, */*', 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        'x-secsdk-csrf-token': 'DOWNGRADE', Referer: WEB_REFERER, 'User-Agent': this.client.getUserAgent() },
       body: new URLSearchParams({ [field]: value }).toString(),
       signal: AbortSignal.timeout(15_000),
-    }, false);
+    };
+    // An unsigned web commit returned HTTP 403 with ticket-guard result headers
+    // (live check 2026-10-10). The signed request also returned 403; absence of
+    // those headers does not prove acceptance. Keep the single-attempt boundary.
+    const response = this.client.requestSessionTicketWeb
+      ? await this.client.requestSessionTicketWeb(url, init)
+      : await this.client.requestRaw(url, init, false);
     // A rejected HTTP status never reaches challenge handling or a retry.
     if (!response.ok) throw new DouyinResponseError('http', response.status, url, response.headers);
     if (response.headers.get('x-tt-verify-passport-decision')) {

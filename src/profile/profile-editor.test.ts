@@ -67,8 +67,35 @@ describe('ProfileEditor text fields', () => {
     expect(target.searchParams.get('device_id')).toBe('3240000001');
     expect(target.searchParams.get('aid')).not.toBeNull();
     expect(init.method).toBe('POST');
-    expect((init.headers as Record<string, string>)['Content-Type']).toBe('application/x-www-form-urlencoded');
+    expect((init.headers as Record<string, string>)['Content-Type']).toBe('application/x-www-form-urlencoded; charset=UTF-8');
+    expect(new Headers(init.headers).get('x-secsdk-csrf-token')).toBe('DOWNGRADE');
+    expect(new Headers(init.headers).has('x-tt-passport-csrf-token')).toBe(false);
+    expect(requestRaw).toHaveBeenCalledTimes(1);
     expect([...new URLSearchParams(String(init.body))]).toEqual([['signature', '新的简介']]);
+  });
+
+  it('sends the commit through the Session ticket signer when the client has one', async () => {
+    const { editor, requestRaw } = harness([]);
+    const signed = jest.fn<Promise<HttpResponse<string>>, [string, RequestInit & { body: string }]>(
+      async () => committed({ signature: '新的简介' }));
+    (editor as unknown as { client: ProfileClient }).client.requestSessionTicketWeb = signed;
+    await expect(editor.setSignature('新的简介')).resolves.toMatchObject({ statusCode: 0 });
+    expect(requestRaw).not.toHaveBeenCalled();
+    const [url, init] = signed.mock.calls[0]!;
+    expect(new URL(url).pathname).toBe('/aweme/v1/web/commit/user/');
+    expect([init.method, init.body]).toEqual(['POST', 'signature=%E6%96%B0%E7%9A%84%E7%AE%80%E4%BB%8B']);
+    expect(new Headers(init.headers).get('x-secsdk-csrf-token')).toBe('DOWNGRADE');
+    expect(signed).toHaveBeenCalledTimes(1);
+  });
+
+  it('never retries a signed empty 403 or falls back to the plain client', async () => {
+    const { editor, requestRaw } = harness([]);
+    const signed = jest.fn<Promise<HttpResponse<string>>, [string, RequestInit & { body: string }]>(
+      async () => raw('', { status: 403 }));
+    (editor as unknown as { client: ProfileClient }).client.requestSessionTicketWeb = signed;
+    await expect(editor.setSignature('fixture')).rejects.toBeInstanceOf(DouyinResponseError);
+    expect(signed).toHaveBeenCalledTimes(1);
+    expect(requestRaw).not.toHaveBeenCalled();
   });
 
   it('never reports an unechoed or different value as applied', async () => {
@@ -95,6 +122,7 @@ describe('ProfileEditor text fields', () => {
       [raw({ status_code: 0 }, { headers: { 'bdturing-verify': 'fixture-challenge' } }), ActionChallengeError],
       [raw({ status_code: 0, verifyData: 'fixture-verify' }), ActionChallengeError],
       [raw('upstream down', { status: 503 }), DouyinResponseError],
+      [raw('', { status: 403 }), DouyinResponseError],
     ];
     for (const [response, type] of cases) {
       const { editor, requestRaw } = harness([response]);
@@ -120,6 +148,7 @@ describe('ProfileEditor avatar', () => {
     expect(requestRaw).toHaveBeenCalledTimes(1);
     const tokenUrl = new URL(requestRaw.mock.calls[0]![0]);
     expect(tokenUrl.origin + tokenUrl.pathname).toBe('https://www.douyin.com/aweme/v1/web/image/upload/token');
+    expect(new Headers(requestRaw.mock.calls[0]![1].headers).has('x-secsdk-csrf-token')).toBe(false);
 
     const [applyUrl, applyInit] = fetcher.mock.calls[0]!;
     const applyTarget = new URL(String(applyUrl));

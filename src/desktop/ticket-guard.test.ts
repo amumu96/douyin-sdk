@@ -1047,3 +1047,89 @@ it('cancels one business request without cancelling pending certificates or dela
   }
   expect(paths).toEqual(['/passport/ticket_guard/get_client_cert/', LOGIN.pathname, new URL(secondPath).pathname]);
 });
+
+describe('Session ticket for an allow-listed web business POST', () => {
+  const WEB = new URL('https://www.douyin.com/aweme/v1/web/commit/user/?device_platform=webapp');
+
+  function hmacKey(request: TicketGuardRequest): Buffer {
+    const shared = diffieHellman({ privateKey: serverKey, publicKey: publicKey(request) });
+    return Buffer.from(hkdfSync('sha256', shared, Buffer.alloc(0), Buffer.alloc(0), 32));
+  }
+
+  it('signs only a bound Session and its response can never bind or rotate a ticket', () => {
+    const cold = new DesktopTicketGuard(); certificates(cold);
+    expect(cold.prepareSessionTicket(WEB, 'fixture-session', '', NOW)).toBeUndefined();
+    const guard = new DesktopTicketGuard(); certificates(guard); bind(guard);
+    expect(guard.prepareSessionTicket(WEB, '', '', NOW)).toBeUndefined();
+    expect(guard.prepareSessionTicket(new URL('http://www.douyin.com/aweme/v1/web/commit/user/'), 'fixture-session', '', NOW)).toBeUndefined();
+    const before = guard.exportState();
+    const request = guard.prepareSessionTicket(WEB, 'fixture-session', '', NOW)!;
+    expect(request.headers['bd-ticket-guard-version']).toBe('2');
+    expect(request.headers['bd-ticket-guard-iteration-version']).toBe('3');
+    expect(request.headers).not.toHaveProperty('bd-ticket-guard-server-cert-sn');
+    expect(clientData(request)).toEqual({ req_content: 'ticket,path,timestamp', timestamp: NOW, ts_sign_ree: 'fixture-ts-sign',
+      req_sign_ree: createHmac('sha256', hmacKey(request)).update(ticketSignContent('fixture-session', WEB.pathname, NOW)).digest('base64') });
+    expect(guard.acceptResponse(request, serverData({ ticket: 'rotated', ts_sign_ree: 'other' }), 'rotated')).toBe(false);
+    expect(guard.exportState()).toEqual(before);
+  });
+
+  it('a disabled native ticket switch never signs the web POST', () => {
+    const bound = new DesktopTicketGuard(); certificates(bound); bind(bound);
+    const guard = new DesktopTicketGuard(bound.exportState(), { bdticket_switch: false } as never);
+    expect(guard.hasBinding('fixture-session')).toBe(true);
+    expect(guard.prepareSessionTicket(WEB, 'fixture-session', '', NOW)).toBeUndefined();
+  });
+
+  it('sends the ticket with msToken and a_bogus, refuses redirects and never binds from the response', async () => {
+    const guard = new DesktopTicketGuard(); certificates(guard); bind(guard);
+    const connection = new ApiConnection({ desktopTicketGuard: guard.exportState(), initialCookies: 'sessionid=fixture-session' });
+    connection.enableTicketGuard(() => undefined);
+    const before = connection.getTicketGuardState();
+    let sent!: { url: URL; init: RequestInit; headers: Headers };
+    const headers = serverData({ ticket: 'rotated', ts_sign_ree: 'other' });
+    jest.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      sent = { url: new URL(String(input)), init: init!, headers: new Headers(init?.headers) };
+      return new Response('{"status_code":0}', { headers });
+    });
+    const result = await connection.requestSessionTicketWeb(WEB.href, { method: 'POST', body: 'signature=fixture',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', 'x-secsdk-csrf-token': 'DOWNGRADE' } });
+    expect(result.rawText).toBe('{"status_code":0}');
+    expect(sent.url.pathname).toBe(WEB.pathname);
+    expect(sent.url.searchParams.get('device_platform')).toBe('webapp');
+    expect(sent.url.searchParams.get('msToken')).toMatch(/^[A-Za-z0-9_-]{128}$/);
+    expect(sent.url.searchParams.get('a_bogus')).toBeTruthy();
+    expect([...sent.url.searchParams.keys()].at(-1)).toBe('a_bogus');
+    expect(sent.init.redirect).toBe('manual');
+    expect(sent.init.body).toBe('signature=fixture');
+    expect(sent.headers.get('x-secsdk-csrf-token')).toBe('DOWNGRADE');
+    expect(sent.headers.get('cookie')).toBe('sessionid=fixture-session');
+    const data = JSON.parse(Buffer.from(sent.headers.get('bd-ticket-guard-client-data')!, 'base64').toString()) as Record<string, unknown>;
+    expect(data['ts_sign_ree']).toBe('fixture-ts-sign');
+    expect(data['req_sign_ree']).toBe(createHmac('sha256', hmacKey({ headers: Object.fromEntries(sent.headers) }))
+      .update(ticketSignContent('fixture-session', WEB.pathname, Number(data['timestamp']))).digest('base64'));
+    expect(connection.getTicketGuardState()).toEqual(before);
+  });
+
+  it.each([
+    ['another host', 'https://imdesktop.douyin.com/aweme/v1/web/commit/user/', 'POST'],
+    ['another path', 'https://www.douyin.com/aweme/v1/web/commit/follow/user/', 'POST'],
+    ['plain http', 'http://www.douyin.com/aweme/v1/web/commit/user/', 'POST'],
+    ['a read', 'https://www.douyin.com/aweme/v1/web/commit/user/', 'GET'],
+  ])('refuses %s before any network request', async (_label, url, method) => {
+    const guard = new DesktopTicketGuard(); certificates(guard); bind(guard);
+    const connection = new ApiConnection({ desktopTicketGuard: guard.exportState(), initialCookies: 'sessionid=fixture-session' });
+    connection.enableTicketGuard(() => undefined);
+    const network = jest.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('unexpected network'));
+    await expect(connection.requestSessionTicketWeb(url, { method, body: 'signature=fixture' })).rejects.toThrow('not allow-listed');
+    expect(network).not.toHaveBeenCalled();
+  });
+
+  it('never sends the web write unsigned when the Session has no bound ticket', async () => {
+    const guard = new DesktopTicketGuard(); certificates(guard);
+    const connection = new ApiConnection({ desktopTicketGuard: guard.exportState(), initialCookies: 'sessionid=fixture-session' });
+    connection.enableTicketGuard(() => undefined);
+    const network = jest.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('unexpected network'));
+    await expect(connection.requestSessionTicketWeb(WEB.href, { method: 'POST', body: 'signature=fixture' })).rejects.toThrow('not bound');
+    expect(network).not.toHaveBeenCalled();
+  });
+});
