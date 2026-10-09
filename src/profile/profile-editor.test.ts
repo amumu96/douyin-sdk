@@ -57,12 +57,13 @@ const commitUpload = (status = 2000, uri = STORE_URI) => Response.json({
 });
 
 describe('ProfileEditor text fields', () => {
-  it('commits only the bio to the desktop endpoint and confirms the echoed value', async () => {
+  it('commits only the bio to the web endpoint and confirms the echoed value', async () => {
     const { editor, requestRaw } = harness([committed({ signature: '新的简介', nickname: 'n' })]);
     await expect(editor.setSignature('新的简介')).resolves.toMatchObject({ statusCode: 0, user: { signature: '新的简介' } });
     const [url, init] = requestRaw.mock.calls[0]!;
     const target = new URL(url);
-    expect(target.origin + target.pathname).toBe('https://imdesktop.douyin.com/aweme/v1/web/commit/user/');
+    expect(target.origin + target.pathname).toBe('https://www.douyin.com/aweme/v1/web/commit/user/');
+    expect((init.headers as Record<string, string>)['Referer']).toBe('https://www.douyin.com/');
     expect(target.searchParams.get('device_id')).toBe('3240000001');
     expect(target.searchParams.get('aid')).not.toBeNull();
     expect(init.method).toBe('POST');
@@ -117,7 +118,8 @@ describe('ProfileEditor avatar', () => {
     const { editor, requestRaw, fetcher } = harness([token()], [apply(), stored(), commitUpload()]);
     await expect(editor.uploadAvatar(PNG)).resolves.toEqual({ uri: STORE_URI, format: 'png', width: 1, height: 1 });
     expect(requestRaw).toHaveBeenCalledTimes(1);
-    expect(new URL(requestRaw.mock.calls[0]![0]).pathname).toBe('/aweme/v1/web/image/upload/token');
+    const tokenUrl = new URL(requestRaw.mock.calls[0]![0]);
+    expect(tokenUrl.origin + tokenUrl.pathname).toBe('https://www.douyin.com/aweme/v1/web/image/upload/token');
 
     const [applyUrl, applyInit] = fetcher.mock.calls[0]!;
     const applyTarget = new URL(String(applyUrl));

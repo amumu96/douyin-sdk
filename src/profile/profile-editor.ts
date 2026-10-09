@@ -6,7 +6,10 @@ import { desktopFingerprintParams, type DesktopScreenSize } from '../services/im
 import { sniffImageFormat, type ImageFormat } from '../services/im/media.js';
 import { crc32Hex, signVodRequest, type UploadCredentials } from '../services/im/upload.js';
 
-const DESKTOP_ORIGIN = 'https://imdesktop.douyin.com';
+// Profile endpoints exist only on the web origin; the desktop origin answers 404
+// (live check 2026-10-09). Common params follow the IM upload config request.
+const WEB_ORIGIN = 'https://www.douyin.com';
+const WEB_REFERER = 'https://www.douyin.com/';
 const COMMIT_USER_PATH = '/aweme/v1/web/commit/user/';
 const IMAGE_TOKEN_PATH = '/aweme/v1/web/image/upload/token';
 const IMAGEX_URL = 'https://imagex.bytedanceapi.com/';
@@ -133,11 +136,11 @@ export class ProfileEditor {
   }
 
   private async commit(field: 'signature' | 'nickname' | 'avatar_uri', value: string): Promise<ProfileUpdateResult> {
-    const url = `${DESKTOP_ORIGIN}${COMMIT_USER_PATH}?${this.commonParams()}`;
+    const url = `${WEB_ORIGIN}${COMMIT_USER_PATH}?${this.commonParams()}`;
     const response = await this.client.requestRaw(url, {
       method: 'POST',
       headers: { Accept: 'application/json, text/plain, */*', 'Content-Type': 'application/x-www-form-urlencoded',
-        Referer: DESKTOP_ORIGIN, 'User-Agent': this.client.getUserAgent() },
+        Referer: WEB_REFERER, 'User-Agent': this.client.getUserAgent() },
       body: new URLSearchParams({ [field]: value }).toString(),
       signal: AbortSignal.timeout(15_000),
     }, false);
@@ -167,10 +170,10 @@ export class ProfileEditor {
   }
 
   private async uploadCredentials(): Promise<UploadCredentials> {
-    const url = `${DESKTOP_ORIGIN}${IMAGE_TOKEN_PATH}?${this.commonParams()}`;
+    const url = `${WEB_ORIGIN}${IMAGE_TOKEN_PATH}?${this.commonParams()}`;
     const response = await this.client.requestRaw(url, {
       method: 'GET',
-      headers: { Accept: 'application/json, text/plain, */*', Referer: DESKTOP_ORIGIN, 'User-Agent': this.client.getUserAgent() },
+      headers: { Accept: 'application/json, text/plain, */*', Referer: WEB_REFERER, 'User-Agent': this.client.getUserAgent() },
       signal: AbortSignal.timeout(15_000),
     }, false);
     if (!response.ok) throw new DouyinResponseError('http', response.status, url, response.headers);

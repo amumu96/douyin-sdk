@@ -140,8 +140,10 @@ const uploaded = await account.uploadAvatar(imageBytes); // 只上传，不修�
   `CommitImageUpload`），再提交 `avatar_uri`。`uploadAvatar()` 只执行第一步，不修改资料，也不计入资料修改额度。
 - 成功修改后，账号缓存的 `profile` 会被清空；修改昵称后 `account.nickname` 同步更新。
 
-接口格式与限频行为对照了网页端的真实请求，请求发往桌面端域名并沿用桌面端公共参数。
-桌面端会话能否直接调用这些接口、头像 ImageX 服务 ID 是否正确，尚待真实账号验收。
+接口格式与限频行为对照了网页端的真实请求。资料接口只存在于网页端域名（桌面端域名返回 404），
+请求发往 `www.douyin.com`，并沿用与 IM 上传配置相同的公共参数和账号 Cookie。
+2026-10-09 已用专用账号在 macOS 上实测 `uploadAvatar`：上传凭证、ImageX 上传与提交全部成功，
+服务 ID 正确，不需要额外的网页端签名。实际修改资料的 `commit/user` 尚未用桌面端会话实测。
 
 ## 联系人与缓存
 
