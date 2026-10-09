@@ -11,7 +11,11 @@ export interface ActionVerificationTarget {
 export interface ActionVerificationResult { status: boolean }
 
 interface ActionVerificationController {
-  open: (verification: ActionVerification, options: OpenLoginVerificationOptions) => Promise<void>;
+  open: (
+    verification: ActionVerification,
+    options: OpenLoginVerificationOptions,
+    onUrl: (url: string) => void,
+  ) => Promise<void>;
   complete: () => void;
   cancel: (reason: string) => void;
 }
@@ -24,6 +28,9 @@ export class ActionVerification {
   #settled = false;
   readonly #lifetime = new AbortController();
   #openTask?: Promise<void>;
+  #urlTask?: Promise<string>;
+  #resolveUrl?: (url: string) => void;
+  #rejectUrl?: (error: Error) => void;
   readonly target: Readonly<ActionVerificationTarget>;
 
   constructor(
@@ -47,12 +54,36 @@ export class ActionVerification {
   }
 
   open(options: OpenLoginVerificationOptions = {}): Promise<void> {
+    return this.start(options);
+  }
+
+  /**
+   * Start the built-in page and return its complete challenge-scoped local URL.
+   * Treat the URL as a credential and only pass it to a trusted server-side proxy.
+   */
+  openUrl(options: OpenLoginVerificationOptions = {}): Promise<string> {
+    this.start({ ...options, openBrowser: options.openBrowser ?? false });
+    return this.#urlTask!;
+  }
+
+  private start(options: OpenLoginVerificationOptions): Promise<void> {
     if (this.#openTask) return this.#openTask;
     this.assertPending();
-    const task = this.#controller.open(this, options).catch((error: unknown) => {
+    this.#urlTask = new Promise<string>((resolve, reject) => {
+      this.#resolveUrl = resolve;
+      this.#rejectUrl = (error) => reject(error);
+    });
+    void this.#urlTask.catch(() => undefined);
+    const task = this.#controller.open(this, options, (url) => this.#resolveUrl?.(url)).catch((error: unknown) => {
+      const resolved = error instanceof Error ? error : new Error(String(error));
+      this.#rejectUrl?.(resolved);
       this.cancel('业务验证页面未能完成');
       throw error;
     });
+    void task.then(
+      () => this.#rejectUrl?.(new Error('业务验证页在启动前已结束')),
+      () => undefined,
+    );
     this.#openTask = task;
     return task;
   }

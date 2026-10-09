@@ -31,9 +31,16 @@ describe('ActionVerification', () => {
   it('deduplicates page opening and cancels on initialization failure', async () => {
     const { verification, controller } = fixture('bdturing');
     controller.open.mockRejectedValue(new Error('fixture failure'));
+    const url = verification.openUrl();
     const first = verification.open();
     expect(verification.open()).toBe(first);
+    await expect(url).rejects.toThrow('fixture failure');
     await expect(first).rejects.toThrow('fixture failure');
+    expect(controller.open).toHaveBeenCalledWith(
+      verification,
+      expect.objectContaining({ openBrowser: false }),
+      expect.any(Function),
+    );
     expect(controller.open).toHaveBeenCalledTimes(1);
     expect(controller.cancel).toHaveBeenCalledTimes(1);
   });

@@ -40,7 +40,8 @@ export interface BrowserLoginVerificationContext {
 export async function openBrowserVerification(
   verification: LoginVerification | ActionVerification,
   context: BrowserLoginVerificationContext,
-  options: OpenLoginVerificationOptions
+  options: OpenLoginVerificationOptions,
+  onUrl?: (url: string) => void,
 ): Promise<void> {
   const timeoutMs = options.timeoutMs ?? 300_000;
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
@@ -111,7 +112,11 @@ export async function openBrowserVerification(
           return;
         }
         const url = `http://127.0.0.1:${address.port}/?token=${encodeURIComponent(sessionToken)}`;
-        process.stderr.write(`[${verification instanceof ActionVerification ? 'action' : 'login'}] 浏览器打开: ${url}\n`);
+        try { onUrl?.(url); }
+        catch (error) { finish(asError(error)); return; }
+        process.stderr.write(onUrl
+          ? `[${verification instanceof ActionVerification ? 'action' : 'login'}] 验证页已启动\n`
+          : `[${verification instanceof ActionVerification ? 'action' : 'login'}] 浏览器打开: ${url}\n`);
         if (options.openBrowser !== false) openSystemBrowser(url);
       });
     };

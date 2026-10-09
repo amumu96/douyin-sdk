@@ -700,8 +700,8 @@ export class AccountAuth {
         else resolve(result ?? {});
       };
       const verification = new LoginVerification(descriptor, {
-        open: (current, options) =>
-          openBrowserVerification(current, browserContext, options),
+        open: (current, options, onUrl) =>
+          openBrowserVerification(current, browserContext, options, onUrl),
         complete: async (result) => finish(result),
         cancel: (reason) => finish(undefined, new Error(reason ?? '登录验证已取消')),
       });

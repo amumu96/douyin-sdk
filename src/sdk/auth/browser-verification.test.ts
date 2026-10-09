@@ -11,6 +11,37 @@ import { request as httpRequest } from 'node:http';
 describe('browser login verification', () => {
   afterEach(() => jest.restoreAllMocks());
 
+  it.each(['login', 'action'] as const)('returns the complete one-time %s page URL before verification completes', async kind => {
+    const connection = new ApiConnection({ deviceId: '10002', installId: '10003' });
+    jest.spyOn(connection, 'requestVerificationRaw').mockResolvedValue(emptyVerificationResponse());
+    const write = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const controller = {
+      open: (
+        current: LoginVerification | ActionVerification,
+        options: { openBrowser?: boolean; timeoutMs?: number },
+        onUrl: (url: string) => void,
+      ) => openBrowserVerification(current, { connection }, options, onUrl),
+      complete: async () => undefined,
+      cancel: () => undefined,
+    };
+    const verification: LoginVerification | ActionVerification = kind === 'login'
+      ? new LoginVerification({ source: 'passport', operation: 'account-info', decision: { code: '10000' } }, controller)
+      : new ActionVerification({ uid: 'fixture' } as Account, { operation: 'follow', uid: 'target' },
+        new ActionChallengeError('bdturing', 'fixture-challenge'), controller);
+
+    const url = await verification.openUrl({ openBrowser: false, timeoutMs: 3000 });
+    const parsed = new URL(url);
+    expect(parsed.origin).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    expect(parsed.pathname).toBe('/');
+    expect(parsed.searchParams.get('token')).toMatch(/^[0-9a-f-]{36}$/);
+    expect(write.mock.calls.flat().join('')).not.toContain(parsed.searchParams.get('token'));
+    await expect(fetch(url)).resolves.toMatchObject({ status: 200 });
+
+    const completion = verification.open();
+    verification.cancel('fixture ended');
+    await expect(completion).rejects.toThrow('fixture ended');
+  });
+
   it('stops rejected business pack before opening a verification page or resuming follow', async () => {
     const connection = new ApiConnection();
     const network = jest.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ message: 'error', data: {

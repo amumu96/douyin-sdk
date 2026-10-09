@@ -1517,7 +1517,8 @@ export class Account extends BaseAccount {
         if (error) reject(error); else resolve();
       };
       const verification = new ActionVerification(this, target, challenge, {
-        open: (current, options) => openBrowserVerification(current, { connection: this.runtime.connection }, options),
+        open: (current, options, onUrl) =>
+          openBrowserVerification(current, { connection: this.runtime.connection }, options, onUrl),
         complete: () => finish(),
         cancel: reason => finish(new Error(reason)),
       });

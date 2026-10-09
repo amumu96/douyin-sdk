@@ -75,6 +75,11 @@ export function configureAccounts(savedAccountId: string, mobile: string, passwo
 
 续期遇到平台挑战仍触发 `system.login.verification`，此时 `verification.operation` 为
 `token-beat`，应保留验证监听器而不是上线后移除。验证取消/超时不伪造成功，不自动重新登录。
+
+远程无桌面部署可调用 `await verification.openUrl({ openBrowser: false })` 获取完整的本地验证页 URL。
+它在 `127.0.0.1` 监听就绪后返回，不等待用户完成验证；随后调用 `verification.open()` 可等待同一验证页结束。
+URL 中的 token 只属于当前挑战，宿主只能在服务端通过有鉴权的反向代理使用，不得写入日志、持久化，
+也不得作为无需认证的公开 URL 返回。验证完成、取消或超时后，本地服务关闭，旧 URL 随即失效。
 只有失败响应的业务 `data.error_code` 为数字401才自动退出该账号并派发 `system.offline`；
 普通网络失败、HTTP401、字符串401不混同处理。退出停止续期和在途验证，保留 Session 文件。
 该调度/续接已通过原码对照及离线测试，真实平台续期安全链和新票据签发仍待验收。

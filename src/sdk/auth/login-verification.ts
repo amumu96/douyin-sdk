@@ -49,7 +49,8 @@ export interface LoginVerificationDescriptor {
 interface LoginVerificationController {
   open: (
     verification: LoginVerification,
-    options: OpenLoginVerificationOptions
+    options: OpenLoginVerificationOptions,
+    onUrl: (url: string) => void,
   ) => Promise<void>;
   complete: (result: LoginVerificationResult) => Promise<void>;
   cancel: (reason?: string) => void;
@@ -74,6 +75,9 @@ export class LoginVerification {
   private settled = false;
   readonly #lifetime = new AbortController();
   private openTask?: Promise<void>;
+  private urlTask?: Promise<string>;
+  private resolveUrl?: (url: string) => void;
+  private rejectUrl?: (error: Error) => void;
 
   /** @internal Local verification host lifetime; null reason denotes completion. */
   get signal(): AbortSignal { return this.#lifetime.signal; }
@@ -94,16 +98,41 @@ export class LoginVerification {
 
   /** 使用 SDK 内置的本地浏览器验证页完成挑战。 */
   open(options: OpenLoginVerificationOptions = {}): Promise<void> {
+    return this.start(options);
+  }
+
+  /**
+   * 启动内置验证页并在监听就绪后返回包含挑战 token 的完整本地 URL。
+   * URL 只应交给受信任的服务端反向代理，不应记录、持久化或直接公开。
+   */
+  openUrl(options: OpenLoginVerificationOptions = {}): Promise<string> {
+    this.start({ ...options, openBrowser: options.openBrowser ?? false });
+    return this.urlTask!;
+  }
+
+  private start(options: OpenLoginVerificationOptions): Promise<void> {
     if (this.openTask) return this.openTask;
     this.assertPending();
-    const task = this.controller.open(this, options).catch((error: unknown) => {
+    this.urlTask = new Promise<string>((resolve, reject) => {
+      this.resolveUrl = resolve;
+      this.rejectUrl = (error) => reject(error);
+    });
+    // `open()` callers intentionally do not consume the URL promise.
+    void this.urlTask.catch(() => undefined);
+    const task = this.controller.open(this, options, (url) => this.resolveUrl?.(url)).catch((error: unknown) => {
+      const resolved = error instanceof Error ? error : new Error(String(error));
+      this.rejectUrl?.(resolved);
       if (!this.settled) {
         this.cancel(
-          error instanceof Error ? error.message : String(error)
+          resolved.message
         );
       }
       throw error;
     });
+    void task.then(
+      () => this.rejectUrl?.(new Error('登录验证页在启动前已结束')),
+      () => undefined,
+    );
     this.openTask = task;
     return task;
   }
