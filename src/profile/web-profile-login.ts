@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { DesktopWebSecureSystemCrypto } from '../anti-bot/desktop-web-secure-crypto.js';
 import { buildPassportAidSign, buildPassportSignQs, passportNoonUtcTs } from '../passport/signQs.js';
 import { generateJumpbyteABogus } from '../anti-bot/aBogus.js';
+import { NodeProfileDTrait } from './node-dtrait.js';
 import { CookieJar } from '../http/cookie-jar.js';
 import { parseJsonResponse } from '../http/response.js';
 import { NodeWebProfileClient, validateWebProfileSession, WebProfileSessionError, type WebProfileSession } from './web-profile-client.js';
@@ -16,6 +17,7 @@ const record = (value: unknown): Record<string, unknown> => value !== null && ty
 
 /** Explicit owner-driven web QR login; no IM login, browser runtime, profile writes or automatic retry. */
 export class NodeWebProfileQrLogin {
+  private readonly dtrait = new NodeProfileDTrait();
   private readonly crypto = new DesktopWebSecureSystemCrypto();
   private readonly jar = new CookieJar();
   private pair: { privatePem: string; publicPem: string } | undefined;
@@ -39,7 +41,9 @@ export class NodeWebProfileQrLogin {
       ...(!post ? { next: NEXT, need_logo: 'false', need_short_url: 'false' } : {}) });
     params.set('ts', ts);
     const headers: Record<string, string> = { Accept: 'application/json', 'User-Agent': this.options.userAgent, Referer: ORIGIN + '/', Cookie: this.jar.toHeader(),
-      'bd-ticket-guard-version': '2', 'bd-ticket-guard-iteration-version': '1', 'bd-ticket-guard-ree-public-key': this.publicKey, 'bd-ticket-guard-web-version': '2' };
+      'bd-ticket-guard-version': '2', 'bd-ticket-guard-iteration-version': '1', 'bd-ticket-guard-ree-public-key': this.publicKey, 'bd-ticket-guard-web-version': '2',
+      'bd-ticket-guard-web-sign-type': '0', 'x-tt-session-dtrait': await this.dtrait.header(path) };
+    this.active(signal);
     const bodyFields = { need_logo: 'false', need_short_url: 'false', is_frontier: 'false', token: this.token, is_new_login: '1', next: NEXT };
     const body = new URLSearchParams(bodyFields).toString();
     const signed = buildPassportSignQs({ query: Object.fromEntries(params), body: post ? bodyFields : {}, appKey: WEB_APP_KEY });
@@ -87,8 +91,8 @@ export class NodeWebProfileQrLogin {
     try {
       this.pair = await this.crypto.generateNewKeyPairPEM(); this.active(signal);
       this.publicKey = Buffer.from((await this.crypto.extractPublicKeyHexFromPem(this.pair.publicPem)).rawHex, 'hex').toString('base64');
-      this.jar.set('bd_ticket_guard_client_data', Buffer.from(JSON.stringify({ 'bd-ticket-guard-version': 2, 'bd-ticket-guard-iteration-version': 1,
-        'bd-ticket-guard-ree-public-key': this.publicKey, 'bd-ticket-guard-web-version': 2 })).toString('base64'));
+      this.jar.set('bd_ticket_guard_client_data', encodeURIComponent(Buffer.from(JSON.stringify({ 'bd-ticket-guard-version': 2, 'bd-ticket-guard-iteration-version': 1,
+        'bd-ticket-guard-ree-public-key': this.publicKey, 'bd-ticket-guard-web-version': 2 })).toString('base64')));
       this.jar.set('bd_ticket_guard_client_web_domain', '2');
       const data = await this.request(QR, signal);
       if (typeof data['token'] !== 'string' || !data['token'] || data['token'].length > 16384 || typeof data['qrcode'] !== 'string' || !data['qrcode'] || data['qrcode'].length > 1048576

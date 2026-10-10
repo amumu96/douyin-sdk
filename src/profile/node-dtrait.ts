@@ -56,7 +56,8 @@ export class NodeProfileDTrait {
   }
 
   async header(path: string): Promise<string> {
-    if (path !== '/aweme/v1/web/commit/user/' && path !== '/aweme/v1/web/user/profile/self/') {
+    if (!['/aweme/v1/web/commit/user/', '/aweme/v1/web/user/profile/self/',
+      '/passport/web/get_qrcode/', '/passport/web/check_qrconnect/'].includes(path)) {
       throw new Error('Profile DTrait path is not allow-listed');
     }
     await Promise.all([this.core.cryptoInitialization, this.core.initPromise]);

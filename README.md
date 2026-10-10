@@ -493,3 +493,8 @@ HTTP 200 不等于已登录。`NodeWebProfileClient.verify()` 仍为不保存状
 `WebProfileSession`；此类不保存认证文件、不上传图片、不提交资料。部署方须在
 账号串行租约/CAS 下自行提升候选状态。网页 QR 获取与未扫码轮询已在 macOS 纯 Node
 实测；确认登录后的真实账号验收仍待主人扫码，离线夹具不代表该步骤通过。
+
+显式网页登录请求也附带 provider 公钥的 `bd-ticket-guard-web-sign-type=0` 和账号独占
+Node Dtrait（仅实际 Node 特征），客户端守卫 Cookie 按官方 Cookie helper 做 URI 编码。
+2026-10-11 的扫码实验已到达 scanned，但确认阶段业务拒绝 2156、未签发 Session
+或票据；这些格式修正不能视为登录恢复成功，也不会自动刷新二维码或重试确认。

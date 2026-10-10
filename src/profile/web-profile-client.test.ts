@@ -149,14 +149,14 @@ test('missing/mismatched/unsafe saved state fails closed without leaking credent
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
-test('Node DTrait encrypts fresh path/time/features; does not fabricate browser rendering features', async () => {
-  const client = new NodeProfileDTrait(); const header = await client.header('/aweme/v1/web/commit/user/');
+test.each(['/aweme/v1/web/commit/user/', '/passport/web/get_qrcode/', '/passport/web/check_qrconnect/'])('Node DTrait encrypts fresh path/time/features for %s without fabricated browser rendering features', async (path) => {
+  const client = new NodeProfileDTrait(); const header = await client.header(path);
   const parts = header.split('_'); expect(Buffer.from(parts[1]!, 'base64')).toHaveLength(256);
   const bytes = Buffer.from(parts[2]!, 'base64');
   const key = (client as unknown as { core: { aesKey: string } }).core.aesKey;
   const decipher = createDecipheriv('aes-128-cbc', Buffer.from(key, 'hex'), bytes.subarray(0, 16));
   const payload = JSON.parse(Buffer.concat([decipher.update(bytes.subarray(16)), decipher.final()]).toString());
-  expect(payload.path).toBe('/aweme/v1/web/commit/user/'); expect(payload.sdkVersion).toBe('1.0.31');
+  expect(payload.path).toBe(path); expect(payload.sdkVersion).toBe('1.0.31');
   expect(payload.timestamp).toBeGreaterThan(Date.now() / 1000 - 10); expect(payload.dtrait.length).toBeGreaterThan(10);
   expect(Object.keys(collectNodeDTraitFeatures().str!)).toEqual(expect.arrayContaining(['str_11', 'str_12', 'str_27']));
   expect(collectNodeDTraitFeatures().str).not.toHaveProperty('str_1');

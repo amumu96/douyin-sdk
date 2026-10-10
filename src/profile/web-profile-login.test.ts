@@ -12,6 +12,7 @@ function harness(mode = 'ok') {
       const query = Object.fromEntries(url.searchParams); delete query['sign']; delete query['qs']; delete query['a_bogus']; delete query['msToken'];
       expect(url.searchParams.get('a_bogus')).toBeTruthy(); expect(query['device_platform']).toBe('web_app');
       expect(query['passport_jssdk_version']).toBe('2.4.12'); expect(query['passport_jssdk_type']).toBe('normal'); expect(query['request_host']).toBe('https://www.douyin.com');
+      expect(headers.get('bd-ticket-guard-web-sign-type')).toBe('0'); expect(headers.get('x-tt-session-dtrait')).toBeTruthy();
       const signed = buildPassportSignQs({ query, body: init?.method === 'POST' ? Object.fromEntries(new URLSearchParams(String(init.body))) : {}, appKey: '163e7ce78d58971a41f5b969996d85c2' });
       expect(url.searchParams.get('sign')).toBe(signed.sign); expect(url.searchParams.get('qs')).toBe(signed.qs);
       expect(headers.get('x-tt-passport-aid-sign')).toBe(buildPassportAidSign({ aid: '6383', path: url.pathname, ts: query['ts']!, appKey: '163e7ce78d58971a41f5b969996d85c2' }));
@@ -21,7 +22,8 @@ function harness(mode = 'ok') {
       expect(init?.method).toBe('GET'); expect(url.searchParams.get('aid')).toBe('6383'); expect(url.searchParams.get('next')).toBe('https://www.douyin.com');
       publicKey = headers.get('bd-ticket-guard-ree-public-key')!;
       const cookie = headers.get('cookie')!.split('; ').find(x => x.startsWith('bd_ticket_guard_client_data='))!.slice('bd_ticket_guard_client_data='.length);
-      expect(JSON.parse(Buffer.from(cookie, 'base64').toString())['bd-ticket-guard-ree-public-key']).toBe(publicKey);
+      expect(cookie).toBe(encodeURIComponent(decodeURIComponent(cookie)));
+      expect(JSON.parse(Buffer.from(decodeURIComponent(cookie), 'base64').toString())['bd-ticket-guard-ree-public-key']).toBe(publicKey);
       return Response.json({ message: 'success', data: { error_code: 0, token: 'fixture-token', qrcode: 'fixture-png-base64', expire_time: 2000000000 } }, { headers: { 'set-cookie': 'passport_csrf_token=fixture-csrf; Path=/', ...(mode === 'early-ticket' ? { 'bd-ticket-guard-server-data': Buffer.from(JSON.stringify({ ticket: 'early', ts_sign: 'ts.2.early' })).toString('base64') } : {}) } });
     }
     if (url.pathname === '/passport/web/check_qrconnect/') {
