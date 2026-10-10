@@ -33,30 +33,39 @@ export class NodeWebProfileQrLogin {
   private active(signal: AbortSignal): void { signal.throwIfAborted(); this.options.assertActive(); }
   private async request(path: typeof QR | typeof POLL, signal: AbortSignal): Promise<Record<string, unknown>> {
     this.active(signal);
-    const post = path === POLL, ts = passportNoonUtcTs();
-    const params = new URLSearchParams({ passport_jssdk_version: '2.4.12', passport_jssdk_type: 'normal', language: 'zh',
-      aid: '6383', device_platform: 'web_app', is_from_ttaccountsdk: '1',
-      is_new_login: '1', is_from_iesaccountsaas: '1', request_host: ORIGIN,
-      account_sdk_source: 'web', p_js_v: '2.4.12', p_js_t: 'pro',
-      ...(!post ? { next: NEXT, need_logo: 'false', need_short_url: 'false' } : {}) });
-    params.set('ts', ts);
-    const headers: Record<string, string> = { Accept: 'application/json', 'User-Agent': this.options.userAgent, Referer: ORIGIN + '/', Cookie: this.jar.toHeader(),
-      'bd-ticket-guard-version': '2', 'bd-ticket-guard-iteration-version': '1', 'bd-ticket-guard-ree-public-key': this.publicKey, 'bd-ticket-guard-web-version': '2',
-      'bd-ticket-guard-web-sign-type': '0', 'x-tt-session-dtrait': await this.dtrait.header(path) };
-    this.active(signal);
-    const bodyFields = { need_logo: 'false', need_short_url: 'false', is_frontier: 'false', token: this.token, is_new_login: '1', next: NEXT };
-    const body = new URLSearchParams(bodyFields).toString();
-    const signed = buildPassportSignQs({ query: Object.fromEntries(params), body: post ? bodyFields : {}, appKey: WEB_APP_KEY });
+    // Official WebInterfaceSdk 3.4.9 modules 175163/310388/442411 (2026-10-11):
+    // both QR methods are GET; next belongs to the URL, not the signed params.
+    const ts = passportNoonUtcTs();
+    const versionFields = { passport_jssdk_version: '3.4.9', p_bd: '0', p_ca: '0',
+      p_ts: String(Date.now()), p_ver: '0', p_zt: '0' };
+    const pNo = createHash('sha256').update(Object.keys(versionFields).sort()
+      .map(key => `${key}=${versionFields[key as keyof typeof versionFields]}`).join('&')).digest('hex');
+    const params = new URLSearchParams({ ...(path === POLL ? { token: this.token } : {}),
+      ...versionFields, passport_jssdk_type: 'normal', is_from_ttaccountsdk: '1', aid: '6383',
+      language: 'zh', device_platform: 'web_app', account_sdk_source: 'web',
+      // The official browser collector catches unavailable browser APIs and returns {}.
+      // No borrowed browser/device fingerprint or fabricated installed SDK versions.
+      account_sdk_source_info: '7e78', p_js_v: '3.4.9', p_js_t: 'pro', p_ver_real: '0',
+      request_host: encodeURIComponent(ORIGIN), p_no: pNo, ts });
+    const navigator = globalThis.navigator;
+    if (navigator?.language) params.set('account_app_language', navigator.language);
+    const signed = buildPassportSignQs({ query: Object.fromEntries(params), body: {}, appKey: WEB_APP_KEY });
     params.set('sign', signed.sign); params.set('qs', signed.qs);
-    const msToken = this.jar.get('msToken'); if (msToken) params.set('msToken', msToken);
-    params.set('a_bogus', generateJumpbyteABogus({ query: params.toString(), body: post ? body : '', userAgent: this.options.userAgent }));
-    headers['x-tt-passport-aid-sign'] = buildPassportAidSign({ aid: '6383', path, ts, appKey: WEB_APP_KEY });
-    if (post) {
-      headers['Content-Type'] = 'application/x-www-form-urlencoded; charset=UTF-8'; headers['Origin'] = ORIGIN;
-      headers['x-tt-passport-csrf-token'] = this.jar.get('passport_csrf_token') || this.jar.get('passport_csrf_token_default') || '';
-    }
-    const response = await (this.options.fetcher ?? globalThis.fetch)(ORIGIN + path + '?' + params, {
-      method: post ? 'POST' : 'GET', redirect: 'manual', headers, signal, ...(post ? { body } : {}),
+    const url = new URL(ORIGIN + path); url.searchParams.set('next', NEXT);
+    for (const [key, value] of params) url.searchParams.append(key, value);
+    const msToken = this.jar.get('msToken'); if (msToken) url.searchParams.set('msToken', msToken);
+    url.searchParams.set('a_bogus', generateJumpbyteABogus({ query: url.searchParams.toString(), body: '', userAgent: this.options.userAgent }));
+    const headers: Record<string, string> = { Accept: 'application/json, text/javascript',
+      'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': this.options.userAgent,
+      Referer: ORIGIN + '/', Cookie: this.jar.toHeader(),
+      'bd-ticket-guard-version': '2', 'bd-ticket-guard-iteration-version': '1',
+      'bd-ticket-guard-ree-public-key': this.publicKey, 'bd-ticket-guard-web-version': '2',
+      'bd-ticket-guard-web-sign-type': '0', 'x-tt-session-dtrait': await this.dtrait.header(path),
+      'x-tt-passport-aid-sign': buildPassportAidSign({ aid: '6383', path, ts, appKey: WEB_APP_KEY }),
+      'x-tt-passport-csrf-token': this.jar.get('passport_csrf_token') || this.jar.get('passport_csrf_token_default') || '' };
+    this.active(signal);
+    const response = await (this.options.fetcher ?? globalThis.fetch)(url.toString(), {
+      method: 'GET', redirect: 'manual', headers, signal,
     });
     const rawText = await response.text(); this.active(signal);
     const json = parseJsonResponse<Record<string, unknown>>({ ok: response.ok, status: response.status, headers: response.headers, data: rawText, rawText }, ORIGIN + path, { preserveLargeIntegers: true });

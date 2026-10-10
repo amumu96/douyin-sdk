@@ -1,4 +1,4 @@
-import { createPublicKey, createVerify } from 'node:crypto';
+import { createHash, createPublicKey, createVerify } from 'node:crypto';
 import { buildPassportSignQs, buildPassportAidSign } from '../passport/signQs.js';
 import { NodeWebProfileQrLogin } from './web-profile-login.js';
 
@@ -9,9 +9,12 @@ function harness(mode = 'ok') {
     const url = new URL(String(input)), headers = new Headers(init?.headers); paths.push(url.pathname);
     expect(url.origin).toBe('https://www.douyin.com'); expect(init?.redirect).toBe('manual');
     if (url.pathname.includes('get_qrcode') || url.pathname.includes('check_qrconnect')) {
-      const query = Object.fromEntries(url.searchParams); delete query['sign']; delete query['qs']; delete query['a_bogus']; delete query['msToken'];
+      const query = Object.fromEntries(url.searchParams); delete query['sign']; delete query['qs']; delete query['a_bogus']; delete query['msToken']; delete query['next'];
       expect(url.searchParams.get('a_bogus')).toBeTruthy(); expect(query['device_platform']).toBe('web_app');
-      expect(query['passport_jssdk_version']).toBe('2.4.12'); expect(query['passport_jssdk_type']).toBe('normal'); expect(query['request_host']).toBe('https://www.douyin.com');
+      expect(query['passport_jssdk_version']).toBe('3.4.9'); expect(query['passport_jssdk_type']).toBe('normal'); expect(query['request_host']).toBe(encodeURIComponent('https://www.douyin.com'));
+      const versionKeys = ['passport_jssdk_version','p_bd','p_ca','p_ts','p_ver','p_zt'].sort();
+      expect(query['p_no']).toBe(createHash('sha256').update(versionKeys.map(k => `${k}=${query[k]}`).join('&')).digest('hex'));
+      expect(query['account_sdk_source_info']).toBe('7e78'); expect(init?.method).toBe('GET'); expect(init?.body).toBeUndefined();
       expect(headers.get('bd-ticket-guard-web-sign-type')).toBe('0'); expect(headers.get('x-tt-session-dtrait')).toBeTruthy();
       const signed = buildPassportSignQs({ query, body: init?.method === 'POST' ? Object.fromEntries(new URLSearchParams(String(init.body))) : {}, appKey: '163e7ce78d58971a41f5b969996d85c2' });
       expect(url.searchParams.get('sign')).toBe(signed.sign); expect(url.searchParams.get('qs')).toBe(signed.qs);
@@ -27,8 +30,8 @@ function harness(mode = 'ok') {
       return Response.json({ message: 'success', data: { error_code: 0, token: 'fixture-token', qrcode: 'fixture-png-base64', expire_time: 2000000000 } }, { headers: { 'set-cookie': 'passport_csrf_token=fixture-csrf; Path=/', ...(mode === 'early-ticket' ? { 'bd-ticket-guard-server-data': Buffer.from(JSON.stringify({ ticket: 'early', ts_sign: 'ts.2.early' })).toString('base64') } : {}) } });
     }
     if (url.pathname === '/passport/web/check_qrconnect/') {
-      polls++; expect(init?.method).toBe('POST'); expect(headers.get('bd-ticket-guard-ree-public-key')).toBe(publicKey);
-      expect(headers.get('x-tt-passport-csrf-token')).toBe('fixture-csrf'); expect(new URLSearchParams(String(init?.body)).get('token')).toBe('fixture-token');
+      polls++; expect(init?.method).toBe('GET'); expect(headers.get('bd-ticket-guard-ree-public-key')).toBe(publicKey);
+      expect(headers.get('x-tt-passport-csrf-token')).toBe('fixture-csrf'); expect(url.searchParams.get('token')).toBe('fixture-token'); expect(url.searchParams.get('next')).toBe('https://www.douyin.com');
       if (mode === 'challenge') return Response.json({ message: 'error', data: { error_code: 1105, private: 'secret' } });
       if (mode === 'redirect') return new Response('', { status: 302, headers: { location: 'https://evil.invalid/secret' } });
       if (mode === 'expired') return Response.json({ message: 'success', data: { error_code: 0, status: 'expired' } });

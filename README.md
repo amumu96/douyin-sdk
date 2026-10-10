@@ -486,7 +486,7 @@ HTTP 200 不等于已登录。`NodeWebProfileClient.verify()` 仍为不保存状
 须显式重新准备；SDK 不发现浏览器 Cookie、不增加浏览器运行时、不会重试未知资料写入。
 
 `NodeWebProfileQrLogin` 提供显式、独立的 aid=6383 网页扫码认证：使用新的账号独占 P-256
-密钥和 Cookie jar、Passport sign/qs/aid-sign、实际表单 a_bogus 与 Passport CSRF，
+密钥和 Cookie jar、Passport sign/qs/aid-sign、实际请求 a_bogus 与 Passport CSRF，
 不启动浏览器、不触碰已有 IM 登录。`getQrcode()` 后由调用方展示二维码并有界调用
 `poll()`；过期、拒绝、挑战或网络失败终止本次登录，调用方不得自动替用户确认。
 确认后只有新 Session 对应的新票据且只读 self UID 与指定账号一致，才返回候选
@@ -496,5 +496,9 @@ HTTP 200 不等于已登录。`NodeWebProfileClient.verify()` 仍为不保存状
 
 显式网页登录请求也附带 provider 公钥的 `bd-ticket-guard-web-sign-type=0` 和账号独占
 Node Dtrait（仅实际 Node 特征），客户端守卫 Cookie 按官方 Cookie helper 做 URI 编码。
-2026-10-11 的扫码实验已到达 scanned，但确认阶段业务拒绝 2156、未签发 Session
-或票据；这些格式修正不能视为登录恢复成功，也不会自动刷新二维码或重试确认。
+2026-10-11 早期沿用桌面 POST 轮询格式的扫码实验已到达 scanned，但确认阶段业务
+拒绝 2156、未签发 Session 或票据。随后对照当日官方 WebInterfaceSdk 源码改为两个
+GET 接口、3.4.9 参数及 p_no 完整性摘要；next 仅放入 URL，不参与 Passport 参数签名。
+未安装的浏览器安全组件版本取 0，浏览器采集字段使用官方不可用时的空对象回退，
+不借用指纹。此修正后真实 QR 获取和未扫码轮询通过，确认登录仍待主人验收；
+不能据此宣称 2156 已解决，也不会自动刷新二维码或重试确认。
