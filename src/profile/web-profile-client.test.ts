@@ -162,3 +162,22 @@ test('Node DTrait encrypts fresh path/time/features; does not fabricate browser 
   expect(collectNodeDTraitFeatures().str).not.toHaveProperty('str_1');
   await expect(client.header('/v1/message/send')).rejects.toThrow('allow-listed');
 });
+
+test('avatar commit rechecks its source after async crypto and marks dispatch immediately before POST', async () => {
+  const h = harness(); const dispatched = jest.fn(); let current = true;
+  const original = NodeProfileDTrait.prototype.header;
+  let calls = 0;
+  const header = jest.spyOn(NodeProfileDTrait.prototype, 'header').mockImplementation(async function(this: NodeProfileDTrait, path: string) {
+    const value = await original.call(this, path); if (++calls === 2) current = false; return value;
+  });
+  try {
+    await expect(h.client.commit('avatar_uri', 'fixture-uri', AbortSignal.timeout(10000), {
+      assertCurrent() { if (!current) throw new Error('superseded'); }, onCommitDispatch: dispatched,
+    })).rejects.toThrow('superseded');
+    expect(h.fetcher).toHaveBeenCalledTimes(1); expect(dispatched).not.toHaveBeenCalled();
+  } finally { header.mockRestore(); }
+  const second = harness();
+  await second.client.commit('avatar_uri', 'fixture-uri', AbortSignal.timeout(10000), { onCommitDispatch: dispatched });
+  expect(dispatched).toHaveBeenCalledTimes(1);
+  expect(dispatched.mock.invocationCallOrder[0]).toBeLessThan(second.fetcher.mock.invocationCallOrder[1]!);
+});

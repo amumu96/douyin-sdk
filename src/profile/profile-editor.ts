@@ -5,7 +5,7 @@ import type { HttpResponse } from '../http/types.js';
 import { desktopFingerprintParams, type DesktopScreenSize } from '../services/im/desktop.js';
 import { sniffImageFormat, type ImageFormat } from '../services/im/media.js';
 import { crc32Hex, signVodRequest, type UploadCredentials } from '../services/im/upload.js';
-import type { WebProfileCommitClient } from './web-profile-client.js';
+import type { WebProfileCommitClient, WebProfileOperation } from './web-profile-client.js';
 
 // Profile endpoints exist only on the web origin; the desktop origin answers 404
 // (live check 2026-10-09). Common params follow the IM upload config request.
@@ -76,6 +76,16 @@ export interface AvatarUpdateResult extends ProfileUpdateResult {
   avatarUri: string;
 }
 
+export interface ProfileOperationOptions extends WebProfileOperation { signal?: AbortSignal }
+
+function active(operation: ProfileOperationOptions): void {
+  operation.signal?.throwIfAborted(); operation.assertCurrent?.();
+}
+
+function deadline(milliseconds: number, operation: ProfileOperationOptions): AbortSignal {
+  return operation.signal ? AbortSignal.any([operation.signal, AbortSignal.timeout(milliseconds)]) : AbortSignal.timeout(milliseconds);
+}
+
 /**
  * 资料编辑：简介、昵称、头像。
  *
@@ -112,21 +122,22 @@ export class ProfileEditor {
    * 上传头像图片到 ImageX 但不修改资料；返回可提交的 avatar URI。
    * 只消耗上传凭证，不计入资料修改额度。
    */
-  async uploadAvatar(image: Uint8Array): Promise<UploadedAvatar> {
+  async uploadAvatar(image: Uint8Array, operation: ProfileOperationOptions = {}): Promise<UploadedAvatar> {
+    active(operation);
     if (!(image instanceof Uint8Array) || image.length === 0) throw new Error('avatar image is empty');
     if (image.length > AVATAR_MAX_BYTES) throw new RangeError('avatar image exceeds 20 MiB');
     const format = sniffImageFormat(image);
     if (!AVATAR_FORMATS.has(format)) throw new Error(`unsupported avatar image format: ${format}`);
-    const credentials = await this.uploadCredentials();
-    const address = await this.applyUpload(credentials);
-    await this.putImage(address, image);
-    return { ...await this.commitUpload(credentials, address), format };
+    const credentials = await this.uploadCredentials(operation);
+    const address = await this.applyUpload(credentials, operation);
+    await this.putImage(address, image, operation);
+    return { ...await this.commitUpload(credentials, address, operation), format };
   }
 
   /** 上传并设为头像。只有服务端回显新头像时才视为成功。 */
-  async setAvatar(image: Uint8Array): Promise<AvatarUpdateResult> {
-    const uploaded = await this.uploadAvatar(image);
-    const result = await this.commit('avatar_uri', uploaded.uri);
+  async setAvatar(image: Uint8Array, operation: ProfileOperationOptions = {}): Promise<AvatarUpdateResult> {
+    const uploaded = await this.uploadAvatar(image, operation);
+    const result = await this.commit('avatar_uri', uploaded.uri, operation);
     const key = uploaded.uri.slice(uploaded.uri.indexOf('/') + 1);
     return { ...confirm(result, user => user.avatarUris.some(uri => uri === uploaded.uri || uri.endsWith(`/${key}`)), 'avatar'),
       avatarUri: uploaded.uri };
@@ -140,7 +151,8 @@ export class ProfileEditor {
     return params;
   }
 
-  private async commit(field: 'signature' | 'nickname' | 'avatar_uri', value: string): Promise<ProfileUpdateResult> {
+  private async commit(field: 'signature' | 'nickname' | 'avatar_uri', value: string, operation: ProfileOperationOptions = {}): Promise<ProfileUpdateResult> {
+    active(operation);
     const url = `${WEB_ORIGIN}${COMMIT_USER_PATH}?${this.commonParams()}`;
     const init = {
       method: 'POST',
@@ -150,13 +162,14 @@ export class ProfileEditor {
       headers: { Accept: 'application/json, text/plain, */*', 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
         'x-secsdk-csrf-token': 'DOWNGRADE', Referer: WEB_REFERER, 'User-Agent': this.client.getUserAgent() },
       body: new URLSearchParams({ [field]: value }).toString(),
-      signal: AbortSignal.timeout(15_000),
+      signal: deadline(15_000, operation),
     };
     // An unsigned web commit returned HTTP 403 with ticket-guard result headers
     // (live check 2026-10-10). The signed request also returned 403; absence of
     // those headers does not prove acceptance. Keep the single-attempt boundary.
+    if (!this.options.webCommitClient) operation.onCommitDispatch?.();
     const response = this.options.webCommitClient
-      ? await this.options.webCommitClient.commit(field, value, init.signal)
+      ? await this.options.webCommitClient.commit(field, value, init.signal, operation)
       : this.client.requestSessionTicketWeb
       ? await this.client.requestSessionTicketWeb(url, init)
       : await this.client.requestRaw(url, init, false);
@@ -185,13 +198,15 @@ export class ProfileEditor {
     return result;
   }
 
-  private async uploadCredentials(): Promise<UploadCredentials> {
+  private async uploadCredentials(operation: ProfileOperationOptions): Promise<UploadCredentials> {
+    active(operation);
     const url = `${WEB_ORIGIN}${IMAGE_TOKEN_PATH}?${this.commonParams()}`;
     const response = await this.client.requestRaw(url, {
       method: 'GET',
       headers: { Accept: 'application/json, text/plain, */*', Referer: WEB_REFERER, 'User-Agent': this.client.getUserAgent() },
-      signal: AbortSignal.timeout(15_000),
+      signal: deadline(15_000, operation),
     }, false);
+    active(operation);
     if (!response.ok) throw new DouyinResponseError('http', response.status, url, response.headers);
     const body = parseJsonResponse<Record<string, unknown>>(response, url);
     const field = (name: string) => typeof body[name] === 'string' ? body[name] as string : '';
@@ -204,17 +219,19 @@ export class ProfileEditor {
     return credentials;
   }
 
-  private async imagex(method: 'GET' | 'POST', query: Record<string, string>, credentials: UploadCredentials): Promise<Record<string, unknown>> {
+  private async imagex(method: 'GET' | 'POST', query: Record<string, string>, credentials: UploadCredentials, operation: ProfileOperationOptions): Promise<Record<string, unknown>> {
+    active(operation);
     const body = method === 'POST' ? new Uint8Array() : undefined;
     const signed = signVodRequest({ method, query, ...(body ? { body } : {}), credentials, date: new Date(),
       service: IMAGEX_SERVICE, region: IMAGEX_REGION });
     const response = await this.fetcher(`${IMAGEX_URL}?${signed.canonicalQuery}`, {
-      method, redirect: 'error', signal: AbortSignal.timeout(15_000),
+      method, redirect: 'error', signal: deadline(15_000, operation),
       headers: { ...signed.headers, Authorization: signed.authorization, 'User-Agent': this.client.getUserAgent() },
       ...(body ? { body } : {}),
     });
     let json: Record<string, unknown>;
     try { json = asRecord(await response.json()); } catch { throw new Error(`ImageX ${query['Action']} returned invalid JSON (HTTP ${response.status})`); }
+    active(operation);
     const error = asRecord(asRecord(json['ResponseMetadata'])['Error']);
     if (!response.ok || error['Code'] || error['CodeN']) {
       throw new Error(`ImageX ${query['Action']} failed: ${String(error['Code'] ?? error['CodeN'] ?? response.status)}`);
@@ -222,9 +239,9 @@ export class ProfileEditor {
     return asRecord(json['Result']);
   }
 
-  private async applyUpload(credentials: UploadCredentials): Promise<{ host: string; storeUri: string; authorization: string; sessionKey: string }> {
+  private async applyUpload(credentials: UploadCredentials, operation: ProfileOperationOptions): Promise<{ host: string; storeUri: string; authorization: string; sessionKey: string }> {
     const result = await this.imagex('GET', { Action: 'ApplyImageUpload', Version: IMAGEX_VERSION,
-      ServiceId: this.avatarServiceId, s: randomBytes(8).toString('hex').slice(0, 11) }, credentials);
+      ServiceId: this.avatarServiceId, s: randomBytes(8).toString('hex').slice(0, 11) }, credentials, operation);
     const address = asRecord(result['UploadAddress']);
     const store = asRecord((address['StoreInfos'] as unknown[] | undefined)?.[0]);
     const host = (address['UploadHosts'] as unknown[] | undefined)?.[0];
@@ -241,24 +258,26 @@ export class ProfileEditor {
     return upload;
   }
 
-  private async putImage(address: { host: string; storeUri: string; authorization: string }, image: Uint8Array): Promise<void> {
+  private async putImage(address: { host: string; storeUri: string; authorization: string }, image: Uint8Array, operation: ProfileOperationOptions): Promise<void> {
+    active(operation);
     const response = await this.fetcher(`https://${address.host}/${address.storeUri}`, {
-      method: 'PUT', redirect: 'error', signal: AbortSignal.timeout(60_000), body: image,
+      method: 'PUT', redirect: 'error', signal: deadline(60_000, operation), body: image,
       headers: { Authorization: address.authorization, 'Content-CRC32': crc32Hex(image), 'Content-Type': 'application/octet-stream',
         'Content-Disposition': 'attachment; filename="undefined"', 'X-Storage-U': this.options.platformUid,
         'User-Agent': this.client.getUserAgent() },
     });
     let json: Record<string, unknown> = {};
     try { json = asRecord(await response.json()); } catch { /* reported below */ }
+    active(operation);
     if (!response.ok || json['success'] !== 0) {
       const error = asRecord(json['error']);
       throw new Error(`avatar storage upload failed: ${String(error['message'] ?? error['code'] ?? response.status)}`);
     }
   }
 
-  private async commitUpload(credentials: UploadCredentials, address: { storeUri: string; sessionKey: string }): Promise<Omit<UploadedAvatar, 'format'>> {
+  private async commitUpload(credentials: UploadCredentials, address: { storeUri: string; sessionKey: string }, operation: ProfileOperationOptions): Promise<Omit<UploadedAvatar, 'format'>> {
     const result = await this.imagex('POST', { Action: 'CommitImageUpload', Version: IMAGEX_VERSION,
-      SessionKey: address.sessionKey, ServiceId: this.avatarServiceId }, credentials);
+      SessionKey: address.sessionKey, ServiceId: this.avatarServiceId }, credentials, operation);
     const committed = asRecord((result['Results'] as unknown[] | undefined)?.[0]);
     if (committed['Uri'] !== address.storeUri || committed['UriStatus'] !== 2000) {
       throw new Error('ImageX commit did not confirm the uploaded avatar');

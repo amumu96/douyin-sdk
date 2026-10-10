@@ -77,7 +77,13 @@ export function webProfileFileStore(directory: string, uid: string): WebProfileS
 }
 
 export interface WebProfileCommitClient {
-  commit(field: 'signature' | 'nickname' | 'avatar_uri', value: string, signal: AbortSignal): Promise<HttpResponse<string>>;
+  commit(field: 'signature' | 'nickname' | 'avatar_uri', value: string, signal: AbortSignal, operation?: WebProfileOperation): Promise<HttpResponse<string>>;
+}
+
+/** Caller-owned cancellation and source fence, checked immediately before dispatch. */
+export interface WebProfileOperation {
+  assertCurrent?(): void;
+  onCommitDispatch?(): void;
 }
 
 /** Web authentication and crypto are isolated from the Desktop IM connection and its cookie jar. */
@@ -141,8 +147,8 @@ export class NodeWebProfileClient implements WebProfileCommitClient {
     };
   }
 
-  private async request(state: WebProfileSession, jar: CookieJar, path: string, method: 'GET' | 'POST', body: string, signal: AbortSignal): Promise<HttpResponse<string>> {
-    this.options.assertActive(); signal.throwIfAborted();
+  private async request(state: WebProfileSession, jar: CookieJar, path: string, method: 'GET' | 'POST', body: string, signal: AbortSignal, operation: WebProfileOperation = {}): Promise<HttpResponse<string>> {
+    this.options.assertActive(); signal.throwIfAborted(); operation.assertCurrent?.();
     const params = new URLSearchParams({ aid: '6383', device_platform: 'webapp', channel: 'channel_pc_web',
       version_code: '170400', version_name: '17.4.0' });
     if (method === 'GET') { params.set('source', 'channel_pc_web'); params.set('personal_center_strategy', '1'); params.set('publish_video_strategy_type', '2'); }
@@ -156,18 +162,19 @@ export class NodeWebProfileClient implements WebProfileCommitClient {
       ...(method === 'POST' ? { Origin: ORIGIN, 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', 'x-secsdk-csrf-token': 'DOWNGRADE' } : {}),
     };
     // Recheck after crypto/collection and before the only business POST.
-    this.options.assertActive(); signal.throwIfAborted();
+    this.options.assertActive(); signal.throwIfAborted(); operation.assertCurrent?.();
     const url = `${ORIGIN}${path}?${params}`;
+    if (method === 'POST' && path === COMMIT) operation.onCommitDispatch?.();
     const res = await (this.options.fetcher ?? globalThis.fetch)(url, { method, headers, redirect: 'manual', signal,
       ...(method === 'POST' ? { body } : {}) });
-    const rawText = await res.text(); signal.throwIfAborted(); this.options.assertActive();
+    const rawText = await res.text(); signal.throwIfAborted(); this.options.assertActive(); operation.assertCurrent?.();
     if (!res.ok) throw new DouyinResponseError('http', res.status, url, res.headers);
     for (const cookie of res.headers.getSetCookie()) jar.mergeSetCookie(cookie);
     return { ok: res.ok, status: res.status, headers: res.headers, rawText, data: rawText };
   }
 
-  private async verifyState(state: WebProfileSession, jar: CookieJar, signal: AbortSignal): Promise<HttpResponse<string>> {
-    const response = await this.request(state, jar, SELF, 'GET', '', signal);
+  private async verifyState(state: WebProfileSession, jar: CookieJar, signal: AbortSignal, operation: WebProfileOperation = {}): Promise<HttpResponse<string>> {
+    const response = await this.request(state, jar, SELF, 'GET', '', signal, operation);
     const body = parseJsonResponse<Record<string, unknown>>(response, ORIGIN + SELF, { preserveLargeIntegers: true });
     const user = body['user'] as { uid?: unknown } | undefined;
     if (body['status_code'] !== 0 || !user || String(user.uid) !== this.options.platformUid) throw new WebProfileSessionError('identity-mismatch');
@@ -186,19 +193,19 @@ export class NodeWebProfileClient implements WebProfileCommitClient {
     return { status: response.status, platformUid: state.platformUid };
   }
 
-  async commit(field: 'signature' | 'nickname' | 'avatar_uri', value: string, signal: AbortSignal): Promise<HttpResponse<string>> {
+  async commit(field: 'signature' | 'nickname' | 'avatar_uri', value: string, signal: AbortSignal, operation: WebProfileOperation = {}): Promise<HttpResponse<string>> {
     if (!['signature', 'nickname', 'avatar_uri'].includes(field) || typeof value !== 'string') throw new Error('Invalid web profile field');
     if (this.busy) throw new Error('Web profile operation already active');
     this.busy = true;
     try {
       const state = validateWebProfileSession(this.options.store.load(), this.options.platformUid);
       const jar = new CookieJar(state.cookies);
-      await this.verifyState(state, jar, signal);
+      await this.verifyState(state, jar, signal, operation);
       state.cookies = jar.toHeader(); state.verifiedAt = new Date().toISOString();
       if (this.certificate) state.serverCertificate = this.certificate;
       // Save refreshed authentication before any write. A failed save prevents dispatch.
       this.options.store.save(state);
-      return await this.request(state, jar, COMMIT, 'POST', new URLSearchParams({ [field]: value }).toString(), signal);
+      return await this.request(state, jar, COMMIT, 'POST', new URLSearchParams({ [field]: value }).toString(), signal, operation);
     } finally { this.busy = false; }
   }
 }

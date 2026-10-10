@@ -10,6 +10,7 @@ export type {
   AvatarUpdateResult,
   ProfileClient,
   ProfileEditorOptions,
+  ProfileOperationOptions,
   ProfileUpdateResult,
   ProfileUser,
   UploadedAvatar,

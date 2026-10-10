@@ -226,3 +226,21 @@ describe('parseRetryAt', () => {
     expect(parseRetryAt('稍后再试')).toBeUndefined();
   });
 });
+
+describe('avatar operation cancellation', () => {
+  it.each([0, 1, 2, 3, 4])('stops at boundary %i without dispatching the profile commit', async stage => {
+    const h = harness([token()], [apply(), stored(), commitUpload()]);
+    const operation = { assertCurrent() {
+      if (h.requestRaw.mock.calls.length + h.fetcher.mock.calls.length >= stage) throw new Error('superseded');
+    }, onCommitDispatch: jest.fn() };
+    await expect(h.editor.setAvatar(PNG, operation)).rejects.toThrow('superseded');
+    expect(h.requestRaw.mock.calls.length + h.fetcher.mock.calls.length).toBe(stage);
+    expect(operation.onCommitDispatch).not.toHaveBeenCalled();
+    expect(h.requestRaw.mock.calls.every(([url]) => new URL(url).pathname !== '/aweme/v1/web/commit/user/')).toBe(true);
+  });
+  it('accepts an external abort signal and never starts an expired operation', async () => {
+    const h = harness([]); const controller = new AbortController(); controller.abort();
+    await expect(h.editor.setAvatar(PNG, { signal: controller.signal })).rejects.toThrow();
+    expect(h.requestRaw).not.toHaveBeenCalled(); expect(h.fetcher).not.toHaveBeenCalled();
+  });
+});

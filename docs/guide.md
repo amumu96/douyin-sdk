@@ -122,8 +122,8 @@ const account = client.createAccount({
 
 ## 资料编辑
 
-SDK 提供简介、昵称和头像的实验性编辑接口。2026-10-10 已在 macOS 专用账号通过一次
-纯 Node 简介直接写入与独立读取核对；昵称和头像资料提交尚未真实验收。
+SDK 提供简介、昵称和头像的实验性编辑接口。2026-10-10 已在 macOS 专用账号分别通过一次
+纯 Node 简介写入、头像完整上传与资料提交，均经独立读取核对；昵称资料提交尚未真实验收。
 每次调用只提交一个字段，与抖音资料编辑框一致：
 
 ```ts
@@ -132,6 +132,12 @@ const name = await account.setNickname('新昵称');        // 1–20 个字符
 const avatar = await account.setAvatar(imageBytes);      // jpeg/png/webp/gif，最大 20 MiB
 const uploaded = await account.uploadAvatar(imageBytes); // 只上传，不修改资料
 ```
+
+头像方法可接收第二个 `ProfileOperationOptions` 参数：`signal` 取消在途请求，
+`assertCurrent()` 在上传各阶段及网页签名完成后、资料 POST 前再次核对操作来源；
+`onCommitDispatch()` 在真正发起资料 POST 前调用，用于区别“尚未提交”与“可能已提交”。
+回调抛错即停止后续阶段；已经发出的请求无法撤回。网页身份预检失败或图片上传失败时
+不会调用提交回调，结果未知的资料写入不得自动重试。默认不传参数时保留原调用行为。
 
 - 返回的 `statusCode` 为 0，表示服务端已回显新值。服务端返回成功但没有回显请求的值时，
   结果为 `PROFILE_UNCONFIRMED`（-3）：修改可能已经生效，不要自动重试。
@@ -147,6 +153,17 @@ const uploaded = await account.uploadAvatar(imageBytes); // 只上传，不修�
 头像上传凭证仍沿用已验证的 IM 上传参数。资料提交不回退到桌面 Cookie 或 REE 票据。
 2026-10-09 已用专用账号在 macOS 上实测 `uploadAvatar`：上传凭证、ImageX 上传与提交全部成功，
 服务 ID 正确，不需要额外的网页端签名。
+2026-10-10 再次使用纯 Node 构建 `873fdc2` 在同一专用账号上传一张 1963 × 3494、
+7160644 字节的 PNG 原图：凭证、申请、图片上传和上传确认各执行一次，均 HTTP 200，
+最终 `UriStatus=2000`，返回尺寸与原图一致。资料修改接口未调用，前后独立读取的
+头像 URI 不变；这次仅为上传验收。
+随后主人单独授权实际修改头像，直接调用真实 `Account.setAvatar()` 完成完整流程：
+同账号网页身份预检、同一原图上传、网页资料 `avatar_uri` 提交和独立读取。北京时间
+16:12:04 完成，上传各阶段各一次且最终 `UriStatus=2000`；唯一一次资料 POST 返回
+HTTP 200、业务码 0，SDK `statusCode=0` 且头像 URI 回显匹配。新的网页自身资料 GET
+再次返回业务码 0、相同 UID 和匹配的新头像 URI，确认头像已变化，简介与昵称未变。
+无第二次资料提交或自动重试；这是 macOS 专用账号的一次直接 SDK 验收，不代表常驻
+头像命令、其他账号、长期续期或 Windows 已验收。
 
 2026-10-10 的桌面会话资料提交实验仍返回空正文 HTTP 403；补签票据后响应里的票据守卫
 结果头消失，但这不能证明票据已被接受。随后在操作员自己的 macOS Chrome 中只提交一次
