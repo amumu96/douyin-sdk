@@ -1404,9 +1404,12 @@ export class Account extends BaseAccount {
         webCommitClient: new NodeWebProfileClient({ platformUid: bound.platformUid,
           store: webProfileFileStore(this.store.accountDataDir(bound.platformUid), bound.platformUid),
           assertActive: () => {
-            this.assertLoginGeneration(generation);
             this.ensureOnline();
-            if (this.runtime.connection !== bound.client) throw new Error('账号连接已变化，网页资料操作取消');
+            // assertLoginGeneration intentionally requires logging-in and is
+            // unsuitable after completeLogin. Keep the online generation fence.
+            if (generation !== this.loginGeneration || this.runtime.connection !== bound.client) {
+              throw new Error('账号连接已变化，网页资料操作取消');
+            }
           },
         }),
       });
