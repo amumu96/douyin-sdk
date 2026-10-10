@@ -122,7 +122,8 @@ const account = client.createAccount({
 
 ## 资料编辑
 
-账号上线后可以修改简介、昵称和头像。每次调用只提交一个字段，与抖音资料编辑框一致：
+SDK 提供简介、昵称和头像的实验性编辑接口；资料提交的真实账号验收尚未通过。
+每次调用只提交一个字段，与抖音资料编辑框一致：
 
 ```ts
 const bio = await account.setSignature('新的简介');      // 空字符串清空简介
@@ -141,7 +142,8 @@ const uploaded = await account.uploadAvatar(imageBytes); // 只上传，不修�
 - 成功修改后，账号缓存的 `profile` 会被清空；修改昵称后 `account.nickname` 同步更新。
 
 接口格式与限频行为对照了网页端的真实请求。资料接口只存在于网页端域名（桌面端域名返回 404），
-请求发往 `www.douyin.com`，并沿用与 IM 上传配置相同的公共参数和账号 Cookie。
+资料提交发往 `www.douyin.com`，由独立的纯 Node 网页资料客户端使用 `aid=6383` 和同账号网页会话；
+头像上传凭证仍沿用已验证的 IM 上传参数。资料提交不回退到桌面 Cookie 或 REE 票据。
 2026-10-09 已用专用账号在 macOS 上实测 `uploadAvatar`：上传凭证、ImageX 上传与提交全部成功，
 服务 ID 正确，不需要额外的网页端签名。
 
@@ -150,7 +152,10 @@ const uploaded = await account.uploadAvatar(imageBytes); // 只上传，不修�
 资料保存，网页得到 HTTP 200、业务限频 2166，没有修改资料。网页安全运行时对这条路径
 直接补入 `x-secsdk-csrf-token` 的公共降级标记；观察窗口内没有额外令牌获取请求。
 本分支按此行为补齐资料 POST 的头及表单字符集，保留单次提交、未知结果不重试。
-更新后的 SDK 只有离线验证，尚未再次对专用账号提交，不能宣称解决了 403。
+部署后专用账号的新命令得到 HTTP 200 空正文，简介仍未修改。只读对照确认当前桌面
+会话在 `aid=339757` 下能读到正确账号，仅改成网页 `aid=6383` 则返回业务码 8、未登录。
+网页的 `web_protect` 票据、Dtrait 与当前桌面请求存在差异；不能只改 aid、补 CSRF 或
+凭 HTTP 200 宣称写入已修复。后续需要先验证同账号的网页会话及匹配安全上下文。
 证据范围和未解决差异见 [资料保存的 CSRF 观察](profile-web-csrf-observation.md)。
 
 ## 联系人与缓存
@@ -628,3 +633,25 @@ export async function inspectSharedContent(event: MessageEvent) {
 SDK 固定使用 Desktop Frontier WebSocket 接收事件、Desktop Cookie HTTP 发送命令，不提供传输模式开关。
 
 离线测试、协议源码核对、真实发送和目标端渲染分别验收；不因某个类已导出就宣称协议能力可用。
+
+
+## 2026-10-10：纯 Node 网页资料认证
+
+`Account` 的资料写入要求账号私有目录内独立的 `web-profile-session.json`（0600）。
+此文件由宿主在显式认证准备时提供，含规范平台 UID、同账号网页 Cookie/UA、匹配的
+P-256 密钥及 `web_protect` 票据，并以 Session 摘要绑定。SDK 不自动读取浏览器目录，
+不安装浏览器、不从 IM 会话推导网页认证，也不跨账号借用认证数据。
+
+每次写入前先 GET 网页自身资料，核对业务码、精确大整数 UID 和 Session 一致性，
+检查显式守卫失败；认证状态保存失败或登录代次变化会阻止资料 POST。
+签名采用网页 `ts_sign/req_sign` 信封、65 字节 EC 公钥点；优先获取服务器公钥证书后
+以 ECDH/HKDF/HMAC 签名，证书不可用时按已有协议退回 ECDSA。写入携带网页版本头、
+uifid、Origin、CSRF 公共降级标记和 Node 原生加密的 Dtrait。无重定向跟随、重试或桌面回退。
+
+Dtrait 仅采集 Node 可真实提供的 Math、Node navigator 和 Intl 特征，不构造 DOM、
+Canvas/WebGL/音频或屏幕特征。它使用已有协议的 RSA/AES 加密，但不保证浏览器特征
+等价或服务器写入接受。网页 Session 失效须显式重新准备；不自动更换账号或重新登录。
+
+392 项聚焦离线测试与 TypeScript 检查通过。macOS 专用账号只读实测：网页自身资料
+HTTP 200、业务码 0、UID 匹配；纯 Node HMAC/Dtrait 请求同样成功。此轮未发送资料
+POST，简介仍为 0 字；守卫结果头缺失不等于签名通过，写入真实验收等待主人新命令。

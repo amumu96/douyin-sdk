@@ -5,6 +5,7 @@ import type { HttpResponse } from '../http/types.js';
 import { desktopFingerprintParams, type DesktopScreenSize } from '../services/im/desktop.js';
 import { sniffImageFormat, type ImageFormat } from '../services/im/media.js';
 import { crc32Hex, signVodRequest, type UploadCredentials } from '../services/im/upload.js';
+import type { WebProfileCommitClient } from './web-profile-client.js';
 
 // Profile endpoints exist only on the web origin; the desktop origin answers 404
 // (live check 2026-10-09). Common params follow the IM upload config request.
@@ -44,6 +45,8 @@ export interface ProfileEditorOptions {
   deviceId?: string;
   avatarServiceId?: string;
   fetcher?: typeof fetch;
+  /** Account-owned verified web authentication; Desktop IM cookies never enter this transport. */
+  webCommitClient?: WebProfileCommitClient;
 }
 
 export interface ProfileUser {
@@ -152,7 +155,9 @@ export class ProfileEditor {
     // An unsigned web commit returned HTTP 403 with ticket-guard result headers
     // (live check 2026-10-10). The signed request also returned 403; absence of
     // those headers does not prove acceptance. Keep the single-attempt boundary.
-    const response = this.client.requestSessionTicketWeb
+    const response = this.options.webCommitClient
+      ? await this.options.webCommitClient.commit(field, value, init.signal)
+      : this.client.requestSessionTicketWeb
       ? await this.client.requestSessionTicketWeb(url, init)
       : await this.client.requestRaw(url, init, false);
     // A rejected HTTP status never reaches challenge handling or a retry.

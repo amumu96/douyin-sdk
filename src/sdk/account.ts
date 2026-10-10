@@ -61,6 +61,7 @@ import type {
 import { SavedSessionRequiredError, toError } from './errors.js';
 import type { ImTransportFactory } from '../services/im/transport.js';
 import { ProfileEditor, type AvatarUpdateResult, type ProfileUpdateResult, type UploadedAvatar } from '../profile/profile-editor.js';
+import { NodeWebProfileClient, webProfileFileStore } from '../profile/web-profile-client.js';
 import { BaseAccount } from '../base/account.js';
 import { emitEventRoutes } from './events/router.js';
 import {
@@ -1399,7 +1400,16 @@ export class Account extends BaseAccount {
             ...(floatHintConfig ? { floatHintConfig } : {}),
           });
       this.sender = sender;
-      this.profileEditor = new ProfileEditor(bound.client, { platformUid: bound.platformUid, deviceId: bound.deviceId });
+      this.profileEditor = new ProfileEditor(bound.client, { platformUid: bound.platformUid, deviceId: bound.deviceId,
+        webCommitClient: new NodeWebProfileClient({ platformUid: bound.platformUid,
+          store: webProfileFileStore(this.store.accountDataDir(bound.platformUid), bound.platformUid),
+          assertActive: () => {
+            this.assertLoginGeneration(generation);
+            this.ensureOnline();
+            if (this.runtime.connection !== bound.client) throw new Error('账号连接已变化，网页资料操作取消');
+          },
+        }),
+      });
       this.assembler = assembler;
       if (stateStore) this.stateStore = stateStore;
       strangerSync = new StrangerSync({ im: sender.imService, ...(stateStore ? { store: stateStore } : {}),
