@@ -484,3 +484,12 @@ HTTP 200 不等于已登录。`NodeWebProfileClient.verify()` 仍为不保存状
 收到不同 Session 或在途重新准备的登录时停止，不能沿用旧票据。此机制不自动登录，
 不能用私信在线状态替代网页登录，也不能声称已解决所有平台 403。过期/撤销的网页登录
 须显式重新准备；SDK 不发现浏览器 Cookie、不增加浏览器运行时、不会重试未知资料写入。
+
+`NodeWebProfileQrLogin` 提供显式、独立的 aid=6383 网页扫码认证：使用新的账号独占 P-256
+密钥和 Cookie jar、Passport sign/qs/aid-sign、实际表单 a_bogus 与 Passport CSRF，
+不启动浏览器、不触碰已有 IM 登录。`getQrcode()` 后由调用方展示二维码并有界调用
+`poll()`；过期、拒绝、挑战或网络失败终止本次登录，调用方不得自动替用户确认。
+确认后只有新 Session 对应的新票据且只读 self UID 与指定账号一致，才返回候选
+`WebProfileSession`；此类不保存认证文件、不上传图片、不提交资料。部署方须在
+账号串行租约/CAS 下自行提升候选状态。网页 QR 获取与未扫码轮询已在 macOS 纯 Node
+实测；确认登录后的真实账号验收仍待主人扫码，离线夹具不代表该步骤通过。
