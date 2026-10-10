@@ -151,6 +151,8 @@ export function createDesktopDTraitCore(
 /** One core per account realm. F24–85 request, collection and monitor state; transport/collector are explicit bindings. */
 export class DesktopDTraitRequestCore {
   initPromise: Promise<unknown> = Promise.resolve(false);
+  /** Crypto initialization only; does not establish authenticated or collected readiness. */
+  readonly cryptoInitialization: Promise<true>;
   aesKey: string | undefined;
   centralRsaPub: string;
   centralVersion: unknown;
@@ -218,7 +220,8 @@ export class DesktopDTraitRequestCore {
     this.edgeVersion = params['edgeVersion'];
     this.featureProtocol = context.featureProtocol;
     this.libraGroup = params['libraGroup'];
-    this.observe(this.init());
+    this.cryptoInitialization = this.init();
+    this.observe(this.cryptoInitialization);
     // Optional pre-supplied sink uses the same replay path as a later browser owner update.
     if (context.monitor) this.updateMonitor(context.monitor);
   }

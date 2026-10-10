@@ -136,26 +136,7 @@ export class DesktopTicketGuard {
       headers[`${PREFIX}ree-public-key`] = this.#publicKey;
       if (getTicket && symmetric) headers[`${PREFIX}server-cert-sn`] = this.#serverSn || '0';
     }
-    if (useTicket) {
-      // Native compares the cached ticket to SessionId first. A cold binding is
-      // an empty ticket, so it matches an empty SessionId even if SS is present.
-      const primaryMatches = this.#binding ? this.matchesCachedSession(sessionId) : sessionId === '';
-      const ticket = primaryMatches ? sessionId : sessionSS;
-      const content = ticketSignContent(ticket, url.pathname, timestamp);
-      if (symmetric && !this.#hmacKey && this.#serverCert) this.#hmacKey = this.deriveHmacKey(this.#serverCert);
-      const hmac = symmetric && this.#hmacKey;
-      const signature = hmac
-        ? createHmac('sha256', hmac).update(content).digest('base64')
-        : sign('sha256', Buffer.from(content), { key: this.#privateKey, dsaEncoding: 'der' }).toString('base64');
-      if (hmac) headers[`${PREFIX}iteration-version`] = '3';
-      // Native nlohmann JSON emits keys in lexical order. timestamp is a number.
-      headers[`${PREFIX}client-data`] = Buffer.from(JSON.stringify({
-        req_content: 'ticket,path,timestamp', req_sign_ree: signature, timestamp,
-        // Native carries the cached signature even after a Cookie mismatch.
-        // Business preflight must check binding separately; a header is not proof.
-        ts_sign_ree: this.#binding?.tsSignRee ?? '',
-      })).toString('base64');
-    }
+    if (useTicket) this.signTicket(headers, url, sessionId, sessionSS, timestamp, symmetric);
     const request: TicketGuardRequest = { headers: Object.freeze(headers),
       ...(useTicket && !this.#binding?.tsSignRee ? { useTicketErrorCode: 4 as const } : {}),
     };
@@ -163,6 +144,46 @@ export class DesktopTicketGuard {
     // Only the latter installs the associated flag authorizing response binding.
     this.#requests.set(request, { eligible, bindSession: getTicket && this.#policy.session.enable === true });
     return request;
+  }
+
+  /**
+   * This Session's REE ticket for one business path the caller explicitly
+   * allow-lists outside the native host policy (a web page's sensitive POST).
+   * It signs only a bound Session, never requests certificates, and its
+   * response can never bind or rotate a ticket.
+   */
+  prepareSessionTicket(url: URL, sessionId: string, sessionSS = '', timestamp = Math.floor(Date.now() / 1000),
+    symmetric = this.#policy.session.ree_enable_symmetric === true): TicketGuardRequest | undefined {
+    if (!this.#policy.enabled || url.protocol !== 'https:' || !this.#binding?.tsSignRee || !(sessionId || sessionSS)) return undefined;
+    const headers: Record<string, string> = {
+      [`${PREFIX}version`]: '2', [`${PREFIX}iteration-version`]: '2', [`${PREFIX}ree-public-key`]: this.#publicKey,
+    };
+    this.signTicket(headers, url, sessionId, sessionSS, timestamp, symmetric);
+    const request: TicketGuardRequest = { headers: Object.freeze(headers) };
+    this.#requests.set(request, { eligible: false, bindSession: false });
+    return request;
+  }
+
+  private signTicket(headers: Record<string, string>, url: URL, sessionId: string, sessionSS: string,
+    timestamp: number, symmetric: boolean): void {
+    // Native compares the cached ticket to SessionId first. A cold binding is
+    // an empty ticket, so it matches an empty SessionId even if SS is present.
+    const primaryMatches = this.#binding ? this.matchesCachedSession(sessionId) : sessionId === '';
+    const ticket = primaryMatches ? sessionId : sessionSS;
+    const content = ticketSignContent(ticket, url.pathname, timestamp);
+    if (symmetric && !this.#hmacKey && this.#serverCert) this.#hmacKey = this.deriveHmacKey(this.#serverCert);
+    const hmac = symmetric && this.#hmacKey;
+    const signature = hmac
+      ? createHmac('sha256', hmac).update(content).digest('base64')
+      : sign('sha256', Buffer.from(content), { key: this.#privateKey, dsaEncoding: 'der' }).toString('base64');
+    if (hmac) headers[`${PREFIX}iteration-version`] = '3';
+    // Native nlohmann JSON emits keys in lexical order. timestamp is a number.
+    headers[`${PREFIX}client-data`] = Buffer.from(JSON.stringify({
+      req_content: 'ticket,path,timestamp', req_sign_ree: signature, timestamp,
+      // Native carries the cached signature even after a Cookie mismatch.
+      // Business preflight must check binding separately; a header is not proof.
+      ts_sign_ree: this.#binding?.tsSignRee ?? '',
+    })).toString('base64');
   }
 
   /** newSessionId is from this response's Set-Cookie, never the latest global jar. */

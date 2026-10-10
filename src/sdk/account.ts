@@ -60,7 +60,8 @@ import type {
 } from '../services/im/types.js';
 import { SavedSessionRequiredError, toError } from './errors.js';
 import type { ImTransportFactory } from '../services/im/transport.js';
-import { ProfileEditor, type AvatarUpdateResult, type ProfileUpdateResult, type UploadedAvatar } from '../profile/profile-editor.js';
+import { ProfileEditor, type AvatarUpdateResult, type ProfileOperationOptions, type ProfileUpdateResult, type UploadedAvatar } from '../profile/profile-editor.js';
+import { NodeWebProfileClient, webProfileFileStore } from '../profile/web-profile-client.js';
 import { BaseAccount } from '../base/account.js';
 import { emitEventRoutes } from './events/router.js';
 import {
@@ -273,14 +274,14 @@ export class Account extends BaseAccount {
   }
 
   /** 上传图片并设为头像（jpeg/png/webp/gif，最大 20 MiB），规则同 setSignature。 */
-  async setAvatar(image: Uint8Array): Promise<AvatarUpdateResult> {
-    return this.updateProfile(editor => editor.setAvatar(image));
+  async setAvatar(image: Uint8Array, operation: ProfileOperationOptions = {}): Promise<AvatarUpdateResult> {
+    return this.updateProfile(editor => editor.setAvatar(image, operation));
   }
 
   /** 只上传头像图片、不修改资料，返回可用的 avatar URI；不计入资料修改额度。 */
-  async uploadAvatar(image: Uint8Array): Promise<UploadedAvatar> {
+  async uploadAvatar(image: Uint8Array, operation: ProfileOperationOptions = {}): Promise<UploadedAvatar> {
     const editor = this.requireProfileEditor();
-    return editor.uploadAvatar(image);
+    return editor.uploadAvatar(image, operation);
   }
 
   private requireProfileEditor(): ProfileEditor {
@@ -1399,7 +1400,19 @@ export class Account extends BaseAccount {
             ...(floatHintConfig ? { floatHintConfig } : {}),
           });
       this.sender = sender;
-      this.profileEditor = new ProfileEditor(bound.client, { platformUid: bound.platformUid, deviceId: bound.deviceId });
+      this.profileEditor = new ProfileEditor(bound.client, { platformUid: bound.platformUid, deviceId: bound.deviceId,
+        webCommitClient: new NodeWebProfileClient({ platformUid: bound.platformUid,
+          store: webProfileFileStore(this.store.accountDataDir(bound.platformUid), bound.platformUid),
+          assertActive: () => {
+            this.ensureOnline();
+            // assertLoginGeneration intentionally requires logging-in and is
+            // unsuitable after completeLogin. Keep the online generation fence.
+            if (generation !== this.loginGeneration || this.runtime.connection !== bound.client) {
+              throw new Error('账号连接已变化，网页资料操作取消');
+            }
+          },
+        }),
+      });
       this.assembler = assembler;
       if (stateStore) this.stateStore = stateStore;
       strangerSync = new StrangerSync({ im: sender.imService, ...(stateStore ? { store: stateStore } : {}),

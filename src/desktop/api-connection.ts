@@ -932,12 +932,35 @@ export class ApiConnection {
     return {};
   }
 
+  /**
+   * One allow-listed www.douyin.com business POST as the web page sends it:
+   * this Session's REE ticket plus msToken and a_bogus. The web profile commit
+   * refuses an unsigned request (HTTP 403 at the ticket guard). No Passport
+   * headers, certificate loading or response binding; redirects are refused.
+   */
+  async requestSessionTicketWeb(url: string, init: RequestInit & { body: string }): Promise<HttpResponse<string>> {
+    const target = new URL(url);
+    if (target.protocol !== 'https:' || target.hostname !== 'www.douyin.com' || !SESSION_TICKET_WEB_PATHS.has(target.pathname)
+      || (init.method ?? 'GET').toUpperCase() !== 'POST' || typeof init.body !== 'string') {
+      throw new Error('Session ticket web request is not allow-listed');
+    }
+    target.searchParams.delete('a_bogus');
+    if (!target.searchParams.has('msToken')) target.searchParams.set('msToken', randomMsToken());
+    // The signature covers the query before a_bogus and the exact form body.
+    target.searchParams.append('a_bogus', generateJumpbyteABogus({
+      userAgent: this.userAgent, query: target.searchParams.toString(), body: init.body,
+    }));
+    const { response: res, data: rawText } = await this.fetchResponse(target.href, init, false, response => response.text(), true, true);
+    return { ok: res.ok, status: res.status, headers: res.headers, data: rawText, rawText };
+  }
+
   private async fetchResponse<T>(
     url: string,
     init: RequestInit,
     passportHeaders: boolean,
     consume: (response: Response) => Promise<T>,
     includeAccountCookies = true,
+    sessionTicket = false,
   ): Promise<{ response: Response; data: T }> {
     init.signal?.throwIfAborted();
     const authenticationEpoch = this.#authenticationEpoch;
@@ -951,7 +974,12 @@ export class ApiConnection {
       // the certificate HTTP callback. The local private key was saved on enable.
       this.initializeTicketCertificate();
     }
-    const guardedRequest = guard?.prepare(target, this.jar.get('sessionid') ?? '', this.jar.get('sessionid_ss') ?? '');
+    const guardedRequest = guard?.prepare(target, this.jar.get('sessionid') ?? '', this.jar.get('sessionid_ss') ?? '')
+      ?? (sessionTicket && includeAccountCookies
+        ? this.#ticketGuard?.prepareSessionTicket(target, this.jar.get('sessionid') ?? '', this.jar.get('sessionid_ss') ?? '')
+        : undefined);
+    // Never send a guarded web write unsigned: the server would only refuse it.
+    if (sessionTicket && !guardedRequest?.headers['bd-ticket-guard-client-data']) throw new Error('Session ticket guard is not bound');
     const cookie = includeAccountCookies ? this.jar.toHeader() : '';
     const headers = mergeRequestHeaders(
       { 'User-Agent': this.userAgent },
@@ -1100,6 +1128,9 @@ function positiveInteger(value: number | string | undefined, fallback: number, n
   return parsed;
 }
 
+
+/** Web business paths whose POST carries this Session's REE ticket. */
+const SESSION_TICKET_WEB_PATHS = new Set(['/aweme/v1/web/commit/user/']);
 
 function randomMsToken(length = 128): string {
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';

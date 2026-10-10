@@ -7,6 +7,8 @@ import { AccountStore } from '../store/account-store.js';
 import { Account, type AccountOptions } from './account.js';
 import { SavedSessionRequiredError } from './errors.js';
 import { ProfileEditor, PROFILE_RATE_LIMITED } from '../profile/profile-editor.js';
+import { webProfileFileStore } from '../profile/web-profile-client.js';
+import { DesktopWebSecureSystemCrypto } from '../anti-bot/desktop-web-secure-crypto.js';
 import { ConnectionManager } from '../base/runtime/connection-manager.js';
 import { ImInboxQueries } from './messaging/inbox-queries.js';
 import { ImService } from '../services/im/service.js';
@@ -18,7 +20,7 @@ import { Group } from './contacts/group.js';
 import { ActionChallengeError } from '../http/action-challenge.js';
 import type { ActionVerification } from './auth/action-verification.js';
 import { DesktopTicketGuard } from '../desktop/ticket-guard.js';
-import { createPublicKey, verify } from 'node:crypto';
+import { createHash, createPublicKey, verify } from 'node:crypto';
 import { segment } from './messaging/message.js';
 import { mapProtoConversationListItem } from '../services/im/mappers.js';
 
@@ -94,6 +96,49 @@ describe('Account lifecycle', () => {
   }
 
   describe('profile editing', () => {
+    async function prepareWebFixture(account: Account): Promise<void> {
+      const pair = await new DesktopWebSecureSystemCrypto().generateNewKeyPairPEM();
+      webProfileFileStore(join(dataDir, 'accounts', account.uid!), account.uid!).save({
+        schemaVersion: 1, platformUid: account.uid!, cookies: 'sessionid=fixture-web-session', userAgent: 'fixture-agent',
+        serverCertificate: { pem: '-----BEGIN CERTIFICATE-----\nMAA=\n-----END CERTIFICATE-----', serial: 'fixture', createdAt: Date.now() },
+        ticketGuard: { privateKey: pair.privatePem, publicKey: pair.publicPem, ticket: 'fixture-ticket', tsSign: 'ts.2.fixture',
+          sessionHash: createHash('sha256').update('fixture-web-session').digest('hex') },
+      });
+    }
+
+    it('uses the real web client after login completes, instead of requiring logging-in state', async () => {
+      const account = createQrAccount(false); await loginWithQr(account); await prepareWebFixture(account);
+      const paths: string[] = [];
+      jest.mocked(globalThis.fetch).mockImplementation(async input => {
+        const path = new URL(String(input)).pathname; paths.push(path);
+        if (path === '/aweme/v1/web/user/profile/self/') return new Response(JSON.stringify({ status_code: 0, user: { uid: account.uid } }));
+        if (path === '/aweme/v1/web/commit/user/') return new Response(JSON.stringify({ status_code: 0, user: { signature: 'fixture bio' } }));
+        unexpectedRequests.push(path); throw new Error('Unexpected fixture HTTP');
+      });
+      expect(account.state).toBe('online');
+      await expect(account.setSignature('fixture bio')).resolves.toMatchObject({ statusCode: 0 });
+      expect(paths).toEqual(['/aweme/v1/web/user/profile/self/', '/aweme/v1/web/commit/user/']);
+      await account.logout();
+    });
+
+    it('cancels an old profile client after logout/relogin while its self GET is in flight', async () => {
+      const account = createQrAccount(false); await loginWithQr(account); await prepareWebFixture(account);
+      let release!: (response: Response) => void, entered!: () => void;
+      const started = new Promise<void>(resolve => { entered = resolve; });
+      const paths: string[] = [];
+      jest.mocked(globalThis.fetch).mockImplementation(async input => {
+        const path = new URL(String(input)).pathname; paths.push(path);
+        if (path === '/aweme/v1/web/user/profile/self/') { entered(); return new Promise(resolve => { release = resolve; }); }
+        unexpectedRequests.push(path); throw new Error('Old profile client must not POST');
+      });
+      const pending = account.setSignature('fixture bio'); const rejected = expect(pending).rejects.toThrow();
+      await started; await account.logout(); await account.login();
+      release(new Response(JSON.stringify({ status_code: 0, user: { uid: account.uid } })));
+      await rejected;
+      expect(paths).toEqual(['/aweme/v1/web/user/profile/self/']);
+      await account.logout();
+    });
+
     it('requires an online account before any profile request', async () => {
       const account = createQrAccount(false);
       const editor = jest.spyOn(ProfileEditor.prototype, 'setSignature');

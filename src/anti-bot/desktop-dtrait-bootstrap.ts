@@ -56,15 +56,7 @@ export interface DesktopDTraitBootstrapContext {
   readonly performance?: { now?(): number };
 }
 
-/** Un/Ln and jn/dr/pr/vr. Explicit browser realm; calling start can load remote scripts.
- * Does not install module-level crypto globals or invent the external DTrait core.
- */
-export class DesktopDTraitBootstrap {
-  readonly parameters: DesktopDTraitParameters;
-  private coreResult: unknown = false;
-  private loaded = false;
-  private loading: Promise<boolean> | undefined;
-  private readonly builtin: Record<string, unknown> = {
+export const DESKTOP_DTRAIT_BUILTIN_PARAMETERS: Readonly<Record<string, unknown>> = Object.freeze({
     urlVersion: '1.0.31',
     centralRsaPub:
       'LS0tLS1CRUdJTiBSU0EgUFVCTElDIEtFWS0tLS0tCk1JSUJDZ0tDQVFFQTQrZHZ2WTd1TStvcGMrbkxHL0R1bVNlRm83YVZjSW0xTE8rbVVJcldwclJ6UDBhMUdwRVEKNHF0TzlNUmYvbHdFSXgzOCs0Qlo0WE9HemV2VnR1VXZmSU9VRTdBVHRRVzdGS0pmNVBuU0xDSTYvazB2bDFGQwpMVVNWbUVQNnFQSnJJalo0elhvcWkzeXVOWisxb2RiUkEvL0dIZ2NnU3l5eWFMcXp3amtwV0dYb3VNWW12WXNTCnBway9mdjJFV0FCc3RQTnhXYTRFT0JDYWRUVVBrWE5RNzZOQkVQOXh6ZkpTMjB3aUR2MW9TL3ZLdnJTVXBXY0oKbmF6a2tCdnFRYmJBcVZiUUZURi9EUGlrcHB1NlpUNmxHSVh2SktDcmVlRmlIQTJxSzZ0UzE4U1dWSFc5QVJ6MQorcGpCMWVxSUlZdG9oV3BUMkI0ME9DNE84dFZlQkFuYmlRSURBUUFCCi0tLS0tRU5EIFJTQSBQVUJMSUMgS0VZLS0tLS0=',
@@ -73,7 +65,17 @@ export class DesktopDTraitBootstrap {
       'LS0tLS1CRUdJTiBSU0EgUFVCTElDIEtFWS0tLS0tCk1JSUJDZ0tDQVFFQXlFQkQ0MXQzcWpqL1NOaU5rT3BBbnNGdGZKZ0F5MGF5VTZCbEJ3RS9EZVZjNkdWV0xWUk4KWjdiMWRuRHVmQk5iUm1XQjlZeWVyYm1FOFFDM2lPOXp1NVFWd2x4SGV2ZEN0ZFFyeDZpQzF3QVRoaHFjdTNIYgprZ1dsazZ1Ylk5MXRvRFhNd0k2WGdmRUoyVEJsdHVSbklXRjR5RDVEaEc2c3lSSVNmNTRMWGY0WjgzbzlGcXNvCmlsNkV3cVZCbEU3dXlIY3dJOTA5WDg4Rlc3MXFLdmJMU040OGJlQ0EwbzFmZitqbmhRakNBTDZqbUR2dUhJeWEKUk1vYm1wRFVOLzQ3L3NHbDNzNDlFOEZFSEFXUmk5d1cyc2NZUDBJTkJXUlR5RlRHcG9GUGlqekJFUndnYzdrWQozVno3ZytSMXd2RkxUSEVITEtYUWFwTHpEMWR5Uk81YUt3SURBUUFCCi0tLS0tRU5EIFJTQSBQVUJMSUMgS0VZLS0tLS0K',
     edgeVersion: 'd0',
     dTraitVersion: '0',
-  };
+  });
+
+/** Un/Ln and jn/dr/pr/vr. Explicit browser realm; calling start can load remote scripts.
+ * Does not install module-level crypto globals or invent the external DTrait core.
+ */
+export class DesktopDTraitBootstrap {
+  readonly parameters: DesktopDTraitParameters;
+  private coreResult: unknown = false;
+  private loaded = false;
+  private loading: Promise<boolean> | undefined;
+  private readonly builtin = DESKTOP_DTRAIT_BUILTIN_PARAMETERS;
   constructor(private readonly context: DesktopDTraitBootstrapContext) {
     this.parameters = new DesktopDTraitParameters(context.parameters);
   }
