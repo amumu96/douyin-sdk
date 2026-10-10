@@ -136,6 +136,13 @@ export class ProfileEditor {
 
   /** 上传并设为头像。只有服务端回显新头像时才视为成功。 */
   async setAvatar(image: Uint8Array, operation: ProfileOperationOptions = {}): Promise<AvatarUpdateResult> {
+    active(operation);
+    if (this.options.webCommitClient?.prepare) {
+      operation.onStage?.('web_session_verify');
+      await this.options.webCommitClient.prepare(deadline(15_000, operation), operation);
+      active(operation);
+    }
+    operation.onStage?.('sdk_upload');
     const uploaded = await this.uploadAvatar(image, operation);
     const result = await this.commit('avatar_uri', uploaded.uri, operation);
     const key = uploaded.uri.slice(uploaded.uri.indexOf('/') + 1);

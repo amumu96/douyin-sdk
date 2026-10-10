@@ -20,7 +20,7 @@ beforeAll(async () => {
 
 function harness(responses = [new Response(`{"status_code":0,"user":{"uid":${UID}}}`), new Response('{"status_code":0,"user":{"signature":"fixture bio"}}')]) {
   const state = structuredClone(fixture);
-  const save = jest.fn();
+  const save = jest.fn((next: WebProfileSession) => { Object.assign(state, structuredClone(next)); });
   const active = jest.fn();
   const fetcher = jest.fn(async (_url: string | URL | Request, _init?: RequestInit) => {
     const response = responses.shift(); if (!response) throw new Error('Unexpected fetch'); return response;
@@ -102,7 +102,7 @@ test('retrieves the server certificate once and signs preflight/write with real 
     const envelope = JSON.parse(Buffer.from(headers.get('bd-ticket-guard-client-data')!, 'base64').toString());
     expect(envelope.req_sign).toBe(createHmac('sha256', Buffer.from(key)).update(`ticket=fixture-ticket&path=${new URL(String(url)).pathname}&timestamp=${envelope.timestamp}`).digest('base64'));
   }
-  expect(h.save.mock.calls[0]![0].serverCertificate.serial).toBe('fixture-sn');
+  expect(h.save.mock.calls[0]![0].serverCertificate!.serial).toBe('fixture-sn');
 });
 
 test('failed certificate fetch uses signed ECDSA fallback without repeating the certificate request', async () => {
@@ -180,4 +180,90 @@ test('avatar commit rechecks its source after async crypto and marks dispatch im
   await second.client.commit('avatar_uri', 'fixture-uri', AbortSignal.timeout(10000), { onCommitDispatch: dispatched });
   expect(dispatched).toHaveBeenCalledTimes(1);
   expect(dispatched.mock.invocationCallOrder[0]).toBeLessThan(second.fetcher.mock.invocationCallOrder[1]!);
+});
+
+test.each([
+  [8, 'unauthenticated'], [2166, 'business-rejected'], [null, 'invalid-response'],
+])('self business status %s is distinct from an actual identity mismatch', async (status, code) => {
+  const h = harness([Response.json({ status_code: status, user: { uid: UID } })]);
+  await expect(h.client.prepare()).rejects.toMatchObject({ code, diagnostic: { status: 200 } });
+  expect(h.fetcher).toHaveBeenCalledTimes(1); expect(h.save).not.toHaveBeenCalled();
+});
+
+test.each(['x-vc-bdturing-parameters', 'bdturing-verify', 'x-tt-verify-passport-decision', 'x-whale-throughput-abort-data'])(
+  'a matching UID cannot override the %s authentication challenge', async name => {
+    const h = harness([Response.json({ status_code: 0, user: { uid: UID } }, { headers: { [name]: 'private-challenge' } })]);
+    await expect(h.client.commit('avatar_uri', 'fixture', AbortSignal.timeout(10000))).rejects.toMatchObject({ code: 'verification-required' });
+    expect(h.fetcher).toHaveBeenCalledTimes(1); expect(h.save).not.toHaveBeenCalled();
+  });
+
+test('durable preparation refreshes same-Session cookies, then a fresh client reuses them', async () => {
+  let state = structuredClone(fixture);
+  const store = { load: () => structuredClone(state), save: (next: WebProfileSession) => { state = structuredClone(next); } };
+  const fetcher = jest.fn(async () => Response.json({ status_code: 0, user: { uid: UID } }, { headers: { 'set-cookie': 'msToken=issued-fixture; Path=/' } }));
+  await new NodeWebProfileClient({ platformUid: UID, store, assertActive() {}, fetcher }).prepare();
+  expect(state.cookies).toContain('msToken=issued-fixture');
+  const later = jest.fn(async (url: string | URL | Request, init?: RequestInit) => {
+    expect(new URL(String(url)).searchParams.get('msToken')).toBe('issued-fixture');
+    expect(new Headers(init!.headers).get('cookie')).toContain('msToken=issued-fixture');
+    return Response.json({ status_code: 0, user: { uid: UID } });
+  });
+  await new NodeWebProfileClient({ platformUid: UID, store, assertActive() {}, fetcher: later }).verify();
+  expect(fetcher).toHaveBeenCalledTimes(1); expect(later).toHaveBeenCalledTimes(1);
+});
+
+test.each([200, 403])('HTTP %s commit cookies persist without a second POST', async status => {
+  let state = structuredClone(fixture), calls = 0;
+  const client = new NodeWebProfileClient({ platformUid: UID, assertActive() {},
+    store: { load: () => structuredClone(state), save: next => { state = structuredClone(next); } },
+    fetcher: async (_url, init) => { calls++; return init?.method === 'GET'
+      ? Response.json({ status_code: 0, user: { uid: UID } })
+      : new Response('', { status, headers: { 'set-cookie': 'msToken=post-fixture; Path=/' } }); },
+  });
+  if (status === 403) await expect(client.commit('avatar_uri', 'fixture', AbortSignal.timeout(10000))).rejects.toMatchObject({ kind: 'http', status });
+  else await client.commit('avatar_uri', 'fixture', AbortSignal.timeout(10000));
+  expect(state.cookies).toContain('msToken=post-fixture'); expect(calls).toBe(2);
+});
+
+test('late preflight cannot overwrite explicitly reprovisioned credentials', async () => {
+  const h = harness([Response.json({ status_code: 0, user: { uid: UID } })]);
+  const original = h.fetcher.getMockImplementation()!;
+  h.fetcher.mockImplementation(async (url, init) => { const response = await original(url, init); h.state.cookies += '; fresh_login=fixture'; return response; });
+  await expect(h.client.prepare()).rejects.toMatchObject({ code: 'state-changed' });
+  expect(h.save).not.toHaveBeenCalled(); expect(h.fetcher).toHaveBeenCalledTimes(1);
+});
+
+test('SDK avatar operation checks web auth before requesting even upload credentials', async () => {
+  const h = harness([Response.json({ status_code: 8, status_msg: 'private-account-secret' })]);
+  const desktop = { requestRaw: jest.fn(), getUserAgent: () => 'fixture' };
+  const editor = new ProfileEditor(desktop, { platformUid: UID, webCommitClient: h.client });
+  const stages: string[] = [], dispatch = jest.fn();
+  await expect(editor.setAvatar(new Uint8Array([1]), { onStage: stage => stages.push(stage), onCommitDispatch: dispatch }))
+    .rejects.toMatchObject({ code: 'unauthenticated', diagnostic: { businessCode: 8, status: 200 } });
+  expect(stages).toEqual(['web_session_verify']); expect(desktop.requestRaw).not.toHaveBeenCalled(); expect(dispatch).not.toHaveBeenCalled();
+});
+
+test('a Session rejected after upload is diagnosed before the avatar POST, without replaying the upload', async () => {
+  const h = harness([Response.json({ status_code: 0, user: { uid: UID } }), Response.json({ status_code: 8 })]);
+  const editor = new ProfileEditor({ requestRaw: jest.fn(), getUserAgent: () => 'fixture' }, { platformUid: UID, webCommitClient: h.client });
+  const upload = jest.spyOn(editor, 'uploadAvatar').mockResolvedValue({ uri: 'fixture-uri', format: 'png' });
+  const stages: string[] = [], dispatch = jest.fn();
+  await expect(editor.setAvatar(new Uint8Array([1]), { onStage: stage => stages.push(stage), onCommitDispatch: dispatch })).rejects.toMatchObject({ code: 'unauthenticated' });
+  expect(stages).toEqual(['web_session_verify', 'sdk_upload', 'profile_commit_preflight']);
+  expect(upload).toHaveBeenCalledTimes(1); expect(h.fetcher).toHaveBeenCalledTimes(2); expect(dispatch).not.toHaveBeenCalled();
+});
+
+test('a re-provisioned login during commit crypto blocks dispatch and preserves the newer file', async () => {
+  const h = harness(); const dispatched = jest.fn();
+  const original = NodeProfileDTrait.prototype.header;
+  let calls = 0;
+  const spy = jest.spyOn(NodeProfileDTrait.prototype, 'header').mockImplementation(async function(this: NodeProfileDTrait, path) {
+    const value = await original.call(this, path);
+    if (++calls === 2) h.state.cookies += '; externally_refreshed=fixture';
+    return value;
+  });
+  try {
+    await expect(h.client.commit('avatar_uri', 'fixture', AbortSignal.timeout(10000), { onCommitDispatch: dispatched })).rejects.toMatchObject({ code: 'state-changed' });
+    expect(dispatched).not.toHaveBeenCalled(); expect(h.fetcher).toHaveBeenCalledTimes(1); expect(h.state.cookies).toContain('externally_refreshed=fixture');
+  } finally { spy.mockRestore(); }
 });

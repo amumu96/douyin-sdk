@@ -475,3 +475,12 @@ pnpm test
 登录前会按 Desktop 链路向抖音注册/激活设备，提交本机硬件 UUID、序列号、网卡 MAC 等信息；
 硬件原文不落盘、不写日志，只保存返回的 deviceId/installId。
 第三方实现参考与来源说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+网页头像安全预检：`Account.setAvatar()` 在上传前用同一账号的网页 self 接口验证认证，
+上传完成后、资料 POST 前再验证一次。业务码 8 报 `WebProfileSessionError.code =
+'unauthenticated'`，其他业务拒绝、无效响应、守卫拒绝和验证挑战各有固定分类；
+HTTP 200 不等于已登录。`NodeWebProfileClient.verify()` 仍为不保存状态的只读检查，
+`prepare()` 只刷新已验证同一 Session 的 Cookie/证书，不上传头像或提交资料。
+收到不同 Session 或在途重新准备的登录时停止，不能沿用旧票据。此机制不自动登录，
+不能用私信在线状态替代网页登录，也不能声称已解决所有平台 403。过期/撤销的网页登录
+须显式重新准备；SDK 不发现浏览器 Cookie、不增加浏览器运行时、不会重试未知资料写入。

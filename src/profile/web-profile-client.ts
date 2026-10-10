@@ -22,9 +22,17 @@ export interface WebProfileSession {
   serverCertificate?: { pem: string; serial: string; createdAt: number };
   ticketGuard: { privateKey: string; publicKey: string; ticket: string; tsSign: string; sessionHash: string };
 }
+export type WebProfileSessionCode = 'unavailable' | 'identity-mismatch' | 'ticket-unavailable' | 'session-changed'
+  | 'unauthenticated' | 'business-rejected' | 'invalid-response' | 'verification-required' | 'state-changed';
+
+/** Fixed metadata only: never attach response text, tokens, identities or URLs. */
+export interface WebProfileSessionDiagnostic {
+  status?: number; businessCode?: number; hasGuardResult?: boolean; hasGuardServerData?: boolean;
+  hasCaptcha?: boolean; hasPassportDecision?: boolean; hasAccountCheck?: boolean;
+}
 export class WebProfileSessionError extends Error {
   override readonly name = 'WebProfileSessionError';
-  constructor(readonly code: 'unavailable' | 'identity-mismatch' | 'ticket-unavailable' | 'session-changed') {
+  constructor(readonly code: WebProfileSessionCode, readonly diagnostic: WebProfileSessionDiagnostic = {}) {
     super(`Web profile session ${code}`);
   }
 }
@@ -77,6 +85,7 @@ export function webProfileFileStore(directory: string, uid: string): WebProfileS
 }
 
 export interface WebProfileCommitClient {
+  prepare?(signal: AbortSignal, operation?: WebProfileOperation): Promise<{ status: number; platformUid: string }>;
   commit(field: 'signature' | 'nickname' | 'avatar_uri', value: string, signal: AbortSignal, operation?: WebProfileOperation): Promise<HttpResponse<string>>;
 }
 
@@ -84,6 +93,7 @@ export interface WebProfileCommitClient {
 export interface WebProfileOperation {
   assertCurrent?(): void;
   onCommitDispatch?(): void;
+  onStage?(stage: 'web_session_verify' | 'sdk_upload' | 'profile_commit_preflight'): void;
 }
 
 /** Web authentication and crypto are isolated from the Desktop IM connection and its cookie jar. */
@@ -164,11 +174,13 @@ export class NodeWebProfileClient implements WebProfileCommitClient {
     // Recheck after crypto/collection and before the only business POST.
     this.options.assertActive(); signal.throwIfAborted(); operation.assertCurrent?.();
     const url = `${ORIGIN}${path}?${params}`;
+    if (method === 'POST' && path === COMMIT && JSON.stringify(this.options.store.load()) !== JSON.stringify(state)) {
+      throw new WebProfileSessionError('state-changed');
+    }
     if (method === 'POST' && path === COMMIT) operation.onCommitDispatch?.();
     const res = await (this.options.fetcher ?? globalThis.fetch)(url, { method, headers, redirect: 'manual', signal,
       ...(method === 'POST' ? { body } : {}) });
     const rawText = await res.text(); signal.throwIfAborted(); this.options.assertActive(); operation.assertCurrent?.();
-    if (!res.ok) throw new DouyinResponseError('http', res.status, url, res.headers);
     for (const cookie of res.headers.getSetCookie()) jar.mergeSetCookie(cookie);
     return { ok: res.ok, status: res.status, headers: res.headers, rawText, data: rawText };
   }
@@ -176,12 +188,29 @@ export class NodeWebProfileClient implements WebProfileCommitClient {
   private async verifyState(state: WebProfileSession, jar: CookieJar, signal: AbortSignal, operation: WebProfileOperation = {}): Promise<HttpResponse<string>> {
     const response = await this.request(state, jar, SELF, 'GET', '', signal, operation);
     const body = parseJsonResponse<Record<string, unknown>>(response, ORIGIN + SELF, { preserveLargeIntegers: true });
-    const user = body['user'] as { uid?: unknown } | undefined;
-    if (body['status_code'] !== 0 || !user || String(user.uid) !== this.options.platformUid) throw new WebProfileSessionError('identity-mismatch');
+    const status = body['status_code'];
+    const diagnostic: WebProfileSessionDiagnostic = {
+      status: response.status,
+      ...(typeof status === 'number' && Number.isSafeInteger(status) && Math.abs(status) <= 1000000 ? { businessCode: status } : {}),
+      hasGuardResult: response.headers.has('bd-ticket-guard-result'),
+      hasGuardServerData: response.headers.has('bd-ticket-guard-server-data'),
+      hasCaptcha: response.headers.has('x-vc-bdturing-parameters') || response.headers.has('bdturing-verify'),
+      hasPassportDecision: response.headers.has('x-tt-verify-passport-decision'),
+      hasAccountCheck: response.headers.has('x-whale-throughput-abort-data'),
+    };
+    if (diagnostic.hasCaptcha || diagnostic.hasPassportDecision || diagnostic.hasAccountCheck) {
+      throw new WebProfileSessionError('verification-required', diagnostic);
+    }
     const guardResult = response.headers.get('bd-ticket-guard-result');
-    if (guardResult !== null && guardResult !== '0') throw new WebProfileSessionError('ticket-unavailable');
+    if (guardResult !== null && guardResult !== '0') throw new WebProfileSessionError('ticket-unavailable', diagnostic);
+    if (status === 8) throw new WebProfileSessionError('unauthenticated', diagnostic);
+    if (typeof status !== 'number' || !Number.isSafeInteger(status)) throw new WebProfileSessionError('invalid-response', diagnostic);
+    if (status !== 0) throw new WebProfileSessionError('business-rejected', diagnostic);
+    const user = body['user'] as { uid?: unknown } | undefined;
+    if (!user || !/^[1-9]\d{0,18}$/.test(String(user.uid))) throw new WebProfileSessionError('invalid-response', diagnostic);
+    if (String(user.uid) !== this.options.platformUid) throw new WebProfileSessionError('identity-mismatch', diagnostic);
     // A changed Session cannot inherit an old ticket merely because its UID matches.
-    if (state.ticketGuard.sessionHash !== sessionHash(jar.toHeader())) throw new WebProfileSessionError('session-changed');
+    if (state.ticketGuard.sessionHash !== sessionHash(jar.toHeader())) throw new WebProfileSessionError('session-changed', diagnostic);
     return response;
   }
 
@@ -193,19 +222,49 @@ export class NodeWebProfileClient implements WebProfileCommitClient {
     return { status: response.status, platformUid: state.platformUid };
   }
 
+  private persist(state: WebProfileSession, jar: CookieJar, expected: unknown, signal: AbortSignal, operation: WebProfileOperation): WebProfileSession {
+    this.options.assertActive(); signal.throwIfAborted(); operation.assertCurrent?.();
+    // A separately provisioned login must never be overwritten by a late response.
+    if (JSON.stringify(this.options.store.load()) !== JSON.stringify(expected)) throw new WebProfileSessionError('state-changed');
+    const next = validateWebProfileSession({ ...state, cookies: jar.toHeader(),
+      ...(this.certificate ? { serverCertificate: this.certificate } : {}) }, this.options.platformUid);
+    this.options.store.save(next);
+    return next;
+  }
+
+  /** Auth-only preflight with durable same-Session Cookie/certificate refresh. No avatar upload or commit. */
+  async prepare(signal = AbortSignal.timeout(15000), operation: WebProfileOperation = {}): Promise<{ status: number; platformUid: string }> {
+    if (this.busy) throw new Error('Web profile operation already active');
+    this.busy = true;
+    try {
+      const original = structuredClone(this.options.store.load()), state = validateWebProfileSession(original, this.options.platformUid);
+      const jar = new CookieJar(state.cookies);
+      const response = await this.verifyState(state, jar, signal, operation);
+      state.verifiedAt = new Date().toISOString();
+      this.persist(state, jar, original, signal, operation);
+      return { status: response.status, platformUid: state.platformUid };
+    } finally { this.busy = false; }
+  }
+
   async commit(field: 'signature' | 'nickname' | 'avatar_uri', value: string, signal: AbortSignal, operation: WebProfileOperation = {}): Promise<HttpResponse<string>> {
     if (!['signature', 'nickname', 'avatar_uri'].includes(field) || typeof value !== 'string') throw new Error('Invalid web profile field');
     if (this.busy) throw new Error('Web profile operation already active');
     this.busy = true;
     try {
-      const state = validateWebProfileSession(this.options.store.load(), this.options.platformUid);
+      const original = structuredClone(this.options.store.load());
+      let state = validateWebProfileSession(original, this.options.platformUid);
       const jar = new CookieJar(state.cookies);
+      operation.onStage?.('profile_commit_preflight');
       await this.verifyState(state, jar, signal, operation);
-      state.cookies = jar.toHeader(); state.verifiedAt = new Date().toISOString();
-      if (this.certificate) state.serverCertificate = this.certificate;
+      state.verifiedAt = new Date().toISOString();
       // Save refreshed authentication before any write. A failed save prevents dispatch.
-      this.options.store.save(state);
-      return await this.request(state, jar, COMMIT, 'POST', new URLSearchParams({ [field]: value }).toString(), signal, operation);
+      state = this.persist(state, jar, original, signal, operation);
+      const response = await this.request(state, jar, COMMIT, 'POST', new URLSearchParams({ [field]: value }).toString(), signal, operation);
+      // Response Cookie rotation belongs to this same verified Session, including HTTP failures.
+      // Never attach a previous ticket to a changed Session or resend the business POST.
+      if (jar.toHeader() !== state.cookies) this.persist(state, jar, state, signal, operation);
+      if (!response.ok) throw new DouyinResponseError('http', response.status, ORIGIN + COMMIT, response.headers);
+      return response;
     } finally { this.busy = false; }
   }
 }
