@@ -267,3 +267,20 @@ test('a re-provisioned login during commit crypto blocks dispatch and preserves 
     expect(dispatched).not.toHaveBeenCalled(); expect(h.fetcher).toHaveBeenCalledTimes(1); expect(h.state.cookies).toContain('externally_refreshed=fixture');
   } finally { spy.mockRestore(); }
 });
+
+test.each([
+  ['x-tt-verify-passport-decision', 'passport-decision-header'], ['bdturing-verify', 'bdturing-header'],
+  ['x-vc-bdturing-parameters', 'captcha-parameters-header'], ['x-whale-throughput-abort-data', 'account-check-header'],
+])('empty preflight challenge %s is typed and never submits bio', async (header, marker) => {
+  const h = harness([new Response('', { headers: { [header]: 'private-token' } })]); const dispatch = jest.fn();
+  const editor = new ProfileEditor({ getUserAgent: () => 'ua' } as never, { platformUid: UID, webCommitClient: h.client });
+  await expect(editor.setSignature('x', { onCommitDispatch: dispatch })).rejects.toMatchObject({ code: 'verification-required', diagnostic: { status: 200, challengeMarkers: [marker] } });
+  expect(h.fetcher).toHaveBeenCalledTimes(1); expect(h.save).not.toHaveBeenCalled(); expect(dispatch).not.toHaveBeenCalled();
+});
+test('bio stage trace covers actual dispatch, response and echo confirmation', async () => {
+  const h = harness(); const stages: string[] = []; const dispatch = jest.fn(() => stages.push('profile_commit'));
+  const editor = new ProfileEditor({ getUserAgent: () => 'ua' } as never, { platformUid: UID, webCommitClient: h.client });
+  await expect(editor.setSignature('fixture bio', { onStage: stage => stages.push(stage), onCommitDispatch: dispatch })).resolves.toMatchObject({ statusCode: 0 });
+  expect(stages.filter((stage, index) => stage !== stages[index - 1])).toEqual(['profile_commit_preflight','profile_commit','profile_response','profile_echo_verify']);
+  expect(dispatch).toHaveBeenCalledTimes(1); expect(h.fetcher).toHaveBeenCalledTimes(2);
+});

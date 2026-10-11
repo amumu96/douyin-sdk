@@ -261,8 +261,8 @@ export class Account extends BaseAccount {
    * 修改简介；空字符串清空。每次修改计入平台限频（简介每天 5 次）。
    * statusCode 为 0 表示服务端已回显新值；结果未确认时不要自动重试。
    */
-  async setSignature(signature: string): Promise<ProfileUpdateResult> {
-    return this.updateProfile(editor => editor.setSignature(signature));
+  async setSignature(signature: string, operation: ProfileOperationOptions = {}): Promise<ProfileUpdateResult> {
+    return this.updateProfile(editor => editor.setSignature(signature, operation));
   }
 
   /** 修改昵称（1–20 个字符），规则同 setSignature。 */

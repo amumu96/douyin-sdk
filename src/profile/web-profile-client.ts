@@ -1,3 +1,4 @@
+import { actionChallengeMarkers, type ActionChallengeMarker } from '../http/action-challenge.js';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, readFileSync, renameSync, writeFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
@@ -29,6 +30,7 @@ export type WebProfileSessionCode = 'unavailable' | 'identity-mismatch' | 'ticke
 export interface WebProfileSessionDiagnostic {
   status?: number; businessCode?: number; hasGuardResult?: boolean; hasGuardServerData?: boolean;
   hasCaptcha?: boolean; hasPassportDecision?: boolean; hasAccountCheck?: boolean;
+  challengeMarkers?: readonly ActionChallengeMarker[];
 }
 export class WebProfileSessionError extends Error {
   override readonly name = 'WebProfileSessionError';
@@ -93,7 +95,7 @@ export interface WebProfileCommitClient {
 export interface WebProfileOperation {
   assertCurrent?(): void;
   onCommitDispatch?(): void;
-  onStage?(stage: 'web_session_verify' | 'sdk_upload' | 'profile_commit_preflight'): void;
+  onStage?(stage: 'web_session_verify' | 'sdk_upload' | 'profile_commit_preflight' | 'profile_response' | 'profile_echo_verify'): void;
 }
 
 /** Web authentication and crypto are isolated from the Desktop IM connection and its cookie jar. */
@@ -187,6 +189,18 @@ export class NodeWebProfileClient implements WebProfileCommitClient {
 
   private async verifyState(state: WebProfileSession, jar: CookieJar, signal: AbortSignal, operation: WebProfileOperation = {}): Promise<HttpResponse<string>> {
     const response = await this.request(state, jar, SELF, 'GET', '', signal, operation);
+    const markers = actionChallengeMarkers(response.headers);
+    // An explicit challenge must remain diagnosable even with an empty/non-JSON body.
+    if (markers.length) {
+      let businessCode: number | undefined;
+      try { const body = JSON.parse(response.rawText); if (Number.isSafeInteger(body?.status_code) && Math.abs(body.status_code) <= 1000000) businessCode = body.status_code; } catch { /* no private body retained */ }
+      throw new WebProfileSessionError('verification-required', {
+        status: response.status, ...(businessCode === undefined ? {} : { businessCode }), challengeMarkers: markers,
+        hasGuardResult: response.headers.has('bd-ticket-guard-result'), hasGuardServerData: response.headers.has('bd-ticket-guard-server-data'),
+        hasCaptcha: response.headers.has('bdturing-verify') || response.headers.has('x-vc-bdturing-parameters'),
+        hasPassportDecision: response.headers.has('x-tt-verify-passport-decision'), hasAccountCheck: response.headers.has('x-whale-throughput-abort-data'),
+      });
+    }
     const body = parseJsonResponse<Record<string, unknown>>(response, ORIGIN + SELF, { preserveLargeIntegers: true });
     const status = body['status_code'];
     const diagnostic: WebProfileSessionDiagnostic = {
@@ -198,7 +212,8 @@ export class NodeWebProfileClient implements WebProfileCommitClient {
       hasPassportDecision: response.headers.has('x-tt-verify-passport-decision'),
       hasAccountCheck: response.headers.has('x-whale-throughput-abort-data'),
     };
-    if (diagnostic.hasCaptcha || diagnostic.hasPassportDecision || diagnostic.hasAccountCheck) {
+    if (typeof body['verifyData'] === 'string' && body['verifyData']) {
+      diagnostic.challengeMarkers = ['verify-data-body'];
       throw new WebProfileSessionError('verification-required', diagnostic);
     }
     const guardResult = response.headers.get('bd-ticket-guard-result');
@@ -262,6 +277,7 @@ export class NodeWebProfileClient implements WebProfileCommitClient {
       const response = await this.request(state, jar, COMMIT, 'POST', new URLSearchParams({ [field]: value }).toString(), signal, operation);
       // Response Cookie rotation belongs to this same verified Session, including HTTP failures.
       // Never attach a previous ticket to a changed Session or resend the business POST.
+      operation.onStage?.('profile_response');
       if (jar.toHeader() !== state.cookies) this.persist(state, jar, state, signal, operation);
       if (!response.ok) throw new DouyinResponseError('http', response.status, ORIGIN + COMMIT, response.headers);
       return response;

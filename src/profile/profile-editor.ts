@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { ActionChallengeError } from '../http/action-challenge.js';
+import { ActionChallengeError, actionChallengeMarkers } from '../http/action-challenge.js';
 import { DouyinResponseError, parseJsonResponse } from '../http/response.js';
 import type { HttpResponse } from '../http/types.js';
 import { desktopFingerprintParams, type DesktopScreenSize } from '../services/im/desktop.js';
@@ -103,9 +103,9 @@ export class ProfileEditor {
   }
 
   /** 修改简介；空字符串清空简介。 */
-  async setSignature(signature: string): Promise<ProfileUpdateResult> {
+  async setSignature(signature: string, operation: ProfileOperationOptions = {}): Promise<ProfileUpdateResult> {
     if (typeof signature !== 'string') throw new TypeError('signature must be a string');
-    const result = await this.commit('signature', signature);
+    const result = await this.commit('signature', signature, operation);
     return confirm(result, user => user.signature === signature, 'signature');
   }
 
@@ -180,18 +180,30 @@ export class ProfileEditor {
       : this.client.requestSessionTicketWeb
       ? await this.client.requestSessionTicketWeb(url, init)
       : await this.client.requestRaw(url, init, false);
+    active(operation);
+    operation.onStage?.('profile_response');
+    const diagnostic = { status: response.status, markers: actionChallengeMarkers(response.headers) };
     // A rejected HTTP status never reaches challenge handling or a retry.
     if (!response.ok) throw new DouyinResponseError('http', response.status, url, response.headers);
-    if (response.headers.get('x-tt-verify-passport-decision')) {
-      throw new ActionChallengeError('passport-decision', response.headers.get('x-tt-verify-passport-decision')!);
+    if (response.headers.has('x-tt-verify-passport-decision')) {
+      let challenge: ActionChallengeError;
+      try { challenge = new ActionChallengeError('passport-decision', response.headers.get('x-tt-verify-passport-decision')!, diagnostic); }
+      catch { throw new DouyinResponseError('passport-verification', response.status, url, response.headers); }
+      throw challenge;
     }
     const bdturing = response.headers.get('bdturing-verify');
-    if (bdturing) throw new ActionChallengeError('bdturing', bdturing);
-    if (response.headers.get('x-vc-bdturing-parameters')) {
+    if (response.headers.has('bdturing-verify')) {
+      let challenge: ActionChallengeError;
+      try { challenge = new ActionChallengeError('bdturing', bdturing ?? '', diagnostic); }
+      catch { throw new DouyinResponseError('captcha', response.status, url, response.headers); }
+      throw challenge;
+    }
+    if (response.headers.has('x-vc-bdturing-parameters')) {
       throw new DouyinResponseError('captcha', response.status, url, response.headers);
     }
+    if (response.headers.has('x-whale-throughput-abort-data')) throw new DouyinResponseError('passport-verification', response.status, url, response.headers);
     const body = parseJsonResponse<Record<string, unknown>>(response, url);
-    if (typeof body['verifyData'] === 'string' && body['verifyData']) throw new ActionChallengeError('bdturing', body['verifyData']);
+    if (typeof body['verifyData'] === 'string' && body['verifyData']) throw new ActionChallengeError('bdturing', body['verifyData'], { ...diagnostic, ...(typeof body['status_code'] === 'number' ? { businessCode: body['status_code'] } : {}), markers: [...diagnostic.markers, 'verify-data-body'] });
     const statusCode = typeof body['status_code'] === 'number' && Number.isSafeInteger(body['status_code'])
       ? body['status_code'] : -1;
     const statusMsg = typeof body['status_msg'] === 'string' ? body['status_msg'] : '';
@@ -200,6 +212,7 @@ export class ProfileEditor {
       const retryAt = parseRetryAt(statusMsg);
       if (retryAt) result.retryAt = retryAt;
     }
+    operation.onStage?.('profile_echo_verify');
     const user = mapUser(body['user']);
     if (user) result.user = user;
     return result;
