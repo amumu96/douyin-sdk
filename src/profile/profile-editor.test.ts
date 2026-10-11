@@ -244,3 +244,45 @@ describe('avatar operation cancellation', () => {
     expect(h.requestRaw).not.toHaveBeenCalled(); expect(h.fetcher).not.toHaveBeenCalled();
   });
 });
+
+describe('bio operation security diagnostics', () => {
+  it.each([
+    ['passport-decision-header', 'passport-decision', raw({}, { headers: { 'x-tt-verify-passport-decision': '{"token":"private-token"}' } })],
+    ['bdturing-header', 'bdturing', raw({}, { headers: { 'bdturing-verify': 'private-token' } })],
+    ['verify-data-body', 'bdturing', raw({ status_code: 1105, verifyData: 'private-token' })],
+  ] as const)('preserves %s without retaining private data in diagnostic JSON', async (marker, source, response) => {
+    const h = harness([response]); const stages: string[] = []; const dispatch = jest.fn();
+    try { await h.editor.setSignature('x', { onStage: stage => stages.push(stage), onCommitDispatch: dispatch }); throw new Error('expected challenge'); }
+    catch (error) {
+      expect(error).toBeInstanceOf(ActionChallengeError);
+      expect(error).toMatchObject({ source, diagnostic: { status: 200, markers: [marker] } });
+      expect(JSON.stringify(error)).not.toContain('private-token');
+    }
+    expect(stages).toEqual(['profile_response']); expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(h.requestRaw).toHaveBeenCalledTimes(1);
+  });
+  it('retains challenge markers on HTTP rejection without changing HTTP failure semantics', async () => {
+    const h = harness([raw('', { status: 403, headers: { 'bdturing-verify': 'private-token' } })]);
+    await expect(h.editor.setSignature('x')).rejects.toMatchObject({ name: 'DouyinResponseError', kind: 'http', status: 403, challengeMarkers: ['bdturing-header'] });
+    expect(h.requestRaw).toHaveBeenCalledTimes(1);
+  });
+  it('account check header prevents a success echo from being accepted', async () => {
+    const h = harness([raw({ status_code: 0, user: { signature: 'x' } }, { headers: { 'x-whale-throughput-abort-data': 'private-token' } })]);
+    await expect(h.editor.setSignature('x')).rejects.toMatchObject({ kind: 'passport-verification', challengeMarkers: ['account-check-header'] });
+    expect(h.requestRaw).toHaveBeenCalledTimes(1);
+  });
+  it('cancelled bio never dispatches; late source change never confirms or retries', async () => {
+    const h = harness([committed({ signature: 'x' })]); const dispatch = jest.fn();
+    const controller = new AbortController(); controller.abort();
+    await expect(h.editor.setSignature('x', { signal: controller.signal, onCommitDispatch: dispatch })).rejects.toThrow();
+    expect(h.requestRaw).not.toHaveBeenCalled(); expect(dispatch).not.toHaveBeenCalled();
+    await expect(h.editor.setSignature('x', { assertCurrent() { if (h.requestRaw.mock.calls.length) throw new Error('superseded'); }, onCommitDispatch: dispatch })).rejects.toThrow('superseded');
+    expect(h.requestRaw).toHaveBeenCalledTimes(1); expect(dispatch).toHaveBeenCalledTimes(1);
+  });
+});
+
+test('malformed identity challenge keeps the fixed header type without confirming its echo', async () => {
+  const h = harness([raw({status_code:0,user:{signature:'x'}}, {headers:{'x-tt-verify-passport-decision':'private-malformed'}})]);
+  await expect(h.editor.setSignature('x')).rejects.toMatchObject({ kind:'passport-verification', challengeMarkers:['passport-decision-header'] });
+  expect(h.requestRaw).toHaveBeenCalledTimes(1);
+});

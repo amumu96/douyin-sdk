@@ -475,3 +475,40 @@ pnpm test
 登录前会按 Desktop 链路向抖音注册/激活设备，提交本机硬件 UUID、序列号、网卡 MAC 等信息；
 硬件原文不落盘、不写日志，只保存返回的 deviceId/installId。
 第三方实现参考与来源说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+网页头像安全预检：`Account.setAvatar()` 在上传前用同一账号的网页 self 接口验证认证，
+上传完成后、资料 POST 前再验证一次。业务码 8 报 `WebProfileSessionError.code =
+'unauthenticated'`，其他业务拒绝、无效响应、守卫拒绝和验证挑战各有固定分类；
+HTTP 200 不等于已登录。`NodeWebProfileClient.verify()` 仍为不保存状态的只读检查，
+`prepare()` 只刷新已验证同一 Session 的 Cookie/证书，不上传头像或提交资料。
+收到不同 Session 或在途重新准备的登录时停止，不能沿用旧票据。此机制不自动登录，
+不能用私信在线状态替代网页登录，也不能声称已解决所有平台 403。过期/撤销的网页登录
+须显式重新准备；SDK 不发现浏览器 Cookie、不增加浏览器运行时、不会重试未知资料写入。
+
+`NodeWebProfileQrLogin` 提供显式、独立的 aid=6383 网页扫码认证：使用新的账号独占 P-256
+密钥和 Cookie jar、Passport sign/qs/aid-sign、实际请求 a_bogus 与 Passport CSRF，
+不启动浏览器、不触碰已有 IM 登录。二维码前按官方 TTWid 插件做同站点匿名检查，
+仅在检查要求注册时注册一次；跳转、挑战或异常认证材料停止，不走跨站 union。
+`getQrcode()` 后由调用方展示二维码并有界调用
+`poll()`；过期、拒绝、挑战或网络失败终止本次登录，调用方不得自动替用户确认。
+确认后只有新 Session 对应的新票据且只读 self UID 与指定账号一致，才返回候选
+`WebProfileSession`；此类不保存认证文件、不上传图片、不提交资料。部署方须在
+账号串行租约/CAS 下自行提升候选状态。网页 QR 获取与未扫码轮询已在 macOS 纯 Node
+实测。2026-10-11 08:29–08:31，专用账号由主人扫码确认，新 Session/票据绑定与
+独立同账号 self 校验通过；部署方在租约/CAS 下提升认证并刷新同 Session 证书，
+重启后只读 self 再次通过。此为 macOS 真账号网页登录证据，非头像写入验收；
+Windows 未验收，离线夹具也不代表该步骤。
+
+显式网页登录请求也附带 provider 公钥的 `bd-ticket-guard-web-sign-type=0` 和账号独占
+Node Dtrait（仅实际 Node 特征），客户端守卫 Cookie 按官方 Cookie helper 做 URI 编码。
+2026-10-11 早期沿用桌面 POST 轮询格式的扫码实验已到达 scanned，但确认阶段业务
+拒绝 2156、未签发 Session 或票据。随后对照当日官方 WebInterfaceSdk 源码改为两个
+GET 接口、3.4.9 参数及 p_no 完整性摘要；next 仅放入 URL，不参与 Passport 参数签名。
+未安装的浏览器安全组件版本取 0，浏览器采集字段使用官方不可用时的空对象回退，
+不借用指纹。修正 GET 后，主人已点击手机确认，服务器仍业务拒绝 2156，未签发
+Session/票据。随后补齐此前遗漏的匿名 TTWid 初始化：macOS 纯 Node 实测 check
+返回 1002、一次 register 返回 0 并下发匿名 ttwid。随后主人确认的新 QR 流程
+已返回 confirmed、签发新 Session/票据并通过同账号 self。早期 2156 的唯一成因
+仍无法确定，头像 POST 403 须独立验收；不会自动刷新二维码或重试确认/未知写入。
+
+资料简介写入也支持可选 `ProfileOperationOptions`（取消信号、当前来源校验、阶段回调和实际提交回调），与头像共享账号独立的网页预检流程。预检明确要求验证时不会提交；HTTP 200 仍须业务码 0 且简介原文回显匹配才能成功。`ActionChallengeError.source` 区分身份二次验证与验证码，`diagnostic` 仅保留 HTTP/业务码及固定响应标记名；网页预检和 HTTP 错误也保留固定挑战标记。标记仅说明服务器给出的验证入口，不推断滑块、短信等未明确提供的方式。资料写入不会自动完成验证或重新提交，`raw` 是敏感材料，不应记录。

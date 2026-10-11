@@ -23,3 +23,6 @@ export type {
   EventPostType,
   EventRawPayload,
 } from './base/index.js';
+
+/** Explicit same-account web QR provisioning; returned session material is private. */
+export { NodeWebProfileQrLogin } from './profile/web-profile-login.js';

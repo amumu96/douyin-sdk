@@ -139,6 +139,21 @@ describe('Account lifecycle', () => {
       await account.logout();
     });
 
+    it('rejects an unauthenticated web avatar Session before desktop upload credentials', async () => {
+      const account = createQrAccount(false); await loginWithQr(account); await prepareWebFixture(account);
+      const paths: string[] = [];
+      jest.mocked(globalThis.fetch).mockImplementation(async input => {
+        const path = new URL(String(input)).pathname; paths.push(path);
+        if (path === '/aweme/v1/web/user/profile/self/') return Response.json({ status_code: 8 });
+        unexpectedRequests.push(path); throw new Error('No avatar upload or profile POST allowed');
+      });
+      const dispatch = jest.fn();
+      await expect(account.setAvatar(new Uint8Array([1]), { onCommitDispatch: dispatch }))
+        .rejects.toMatchObject({ code: 'unauthenticated', diagnostic: { businessCode: 8 } });
+      expect(paths).toEqual(['/aweme/v1/web/user/profile/self/']); expect(dispatch).not.toHaveBeenCalled();
+      await account.logout();
+    });
+
     it('requires an online account before any profile request', async () => {
       const account = createQrAccount(false);
       const editor = jest.spyOn(ProfileEditor.prototype, 'setSignature');

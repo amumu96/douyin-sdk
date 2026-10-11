@@ -1,3 +1,4 @@
+import { actionChallengeMarkers, type ActionChallengeMarker } from './action-challenge.js';
 import type { HttpResponse } from './types.js';
 import { parseLosslessJson } from './lossless-json.js';
 
@@ -12,6 +13,7 @@ export class DouyinResponseError extends Error {
   readonly hasGuardServerData: boolean;
   readonly contentType: string | undefined;
   readonly contentLength: string | undefined;
+  readonly challengeMarkers: readonly ActionChallengeMarker[];
 
   constructor(
     readonly kind: ResponseFailureKind,
@@ -33,6 +35,7 @@ export class DouyinResponseError extends Error {
       contentLength ? `content-length=${contentLength}` : '',
     ].filter(Boolean).join(' ');
     super(`Douyin ${kind}: HTTP ${status} ${endpoint}${diagnostics ? ` (${diagnostics})` : ''}`);
+    this.challengeMarkers = Object.freeze(actionChallengeMarkers(headers));
     this.endpoint = endpoint;
     this.logId = logId;
     this.guardResult = guardResult;
