@@ -31,6 +31,33 @@ export class NodeWebProfileQrLogin {
   }
 
   private active(signal: AbortSignal): void { signal.throwIfAborted(); this.options.assertActive(); }
+  /** Official WebInterfaceSdk TTWid plugin (module 827338): same-origin, no union redirect. */
+  private async bootstrap(signal: AbortSignal): Promise<void> {
+    for (const path of ['/ttwid/check/', '/ttwid/register/'] as const) {
+      this.active(signal);
+      const response = await (this.options.fetcher ?? globalThis.fetch)(ORIGIN + path, {
+        method: 'POST', redirect: 'manual', signal,
+        headers: { Accept: 'application/json, text/plain, */*', 'Content-Type': 'application/json',
+          'User-Agent': this.options.userAgent, Origin: ORIGIN, Referer: ORIGIN + '/', Cookie: this.jar.toHeader() },
+        body: JSON.stringify({ aid: 6383, service: 'www.douyin.com' }),
+      });
+      const rawText = await response.text(); this.active(signal);
+      const json = parseJsonResponse<Record<string, unknown>>({ ok: response.ok, status: response.status,
+        headers: response.headers, data: rawText, rawText }, ORIGIN + path, { preserveLargeIntegers: true });
+      if (response.headers.has('x-vc-bdturing-parameters') || response.headers.has('x-tt-verify-passport-decision')
+        || response.headers.has('x-whale-throughput-abort-data')) throw new WebProfileSessionError('verification-required');
+      const code = json['status_code'];
+      if (typeof code !== 'number' || !Number.isSafeInteger(code) || code < 0 || code > 1000000) throw new WebProfileSessionError('invalid-response');
+      for (const cookie of response.headers.getSetCookie()) this.jar.mergeSetCookie(cookie);
+      // Anonymous initialization must not provision or promote account authentication.
+      if (this.jar.get('sessionid') || this.jar.get('sessionid_ss') || this.jar.get('bd_ticket_guard_server_data')
+        || response.headers.has('bd-ticket-guard-server-data')) throw new WebProfileSessionError('invalid-response');
+      if (code === 0 || code === 1001) return;
+      if (path === '/ttwid/check/' && code > 1001) continue;
+      throw new WebProfileSessionError('business-rejected', { status: response.status, businessCode: code });
+    }
+  }
+
   private async request(path: typeof QR | typeof POLL, signal: AbortSignal): Promise<Record<string, unknown>> {
     this.active(signal);
     // Official WebInterfaceSdk 3.4.9 modules 175163/310388/442411 (2026-10-11):
@@ -103,12 +130,13 @@ export class NodeWebProfileQrLogin {
       this.jar.set('bd_ticket_guard_client_data', encodeURIComponent(Buffer.from(JSON.stringify({ 'bd-ticket-guard-version': 2, 'bd-ticket-guard-iteration-version': 1,
         'bd-ticket-guard-ree-public-key': this.publicKey, 'bd-ticket-guard-web-version': 2 })).toString('base64')));
       this.jar.set('bd_ticket_guard_client_web_domain', '2');
+      await this.bootstrap(signal);
       const data = await this.request(QR, signal);
       if (typeof data['token'] !== 'string' || !data['token'] || data['token'].length > 16384 || typeof data['qrcode'] !== 'string' || !data['qrcode'] || data['qrcode'].length > 1048576
         || typeof data['expire_time'] !== 'number' || !Number.isSafeInteger(data['expire_time'])) throw new WebProfileSessionError('invalid-response');
       this.token = data['token'];
       return { qrcodeBase64: data['qrcode'], expireTime: data['expire_time'] };
-    } finally { this.busy = false; }
+    } catch (error) { this.finished = true; throw error; } finally { this.busy = false; }
   }
 
   /** Each caller-authorized poll makes one authentication request. Does not save/promote account state. */

@@ -487,7 +487,9 @@ HTTP 200 不等于已登录。`NodeWebProfileClient.verify()` 仍为不保存状
 
 `NodeWebProfileQrLogin` 提供显式、独立的 aid=6383 网页扫码认证：使用新的账号独占 P-256
 密钥和 Cookie jar、Passport sign/qs/aid-sign、实际请求 a_bogus 与 Passport CSRF，
-不启动浏览器、不触碰已有 IM 登录。`getQrcode()` 后由调用方展示二维码并有界调用
+不启动浏览器、不触碰已有 IM 登录。二维码前按官方 TTWid 插件做同站点匿名检查，
+仅在检查要求注册时注册一次；跳转、挑战或异常认证材料停止，不走跨站 union。
+`getQrcode()` 后由调用方展示二维码并有界调用
 `poll()`；过期、拒绝、挑战或网络失败终止本次登录，调用方不得自动替用户确认。
 确认后只有新 Session 对应的新票据且只读 self UID 与指定账号一致，才返回候选
 `WebProfileSession`；此类不保存认证文件、不上传图片、不提交资料。部署方须在
@@ -500,5 +502,7 @@ Node Dtrait（仅实际 Node 特征），客户端守卫 Cookie 按官方 Cookie
 拒绝 2156、未签发 Session 或票据。随后对照当日官方 WebInterfaceSdk 源码改为两个
 GET 接口、3.4.9 参数及 p_no 完整性摘要；next 仅放入 URL，不参与 Passport 参数签名。
 未安装的浏览器安全组件版本取 0，浏览器采集字段使用官方不可用时的空对象回退，
-不借用指纹。此修正后真实 QR 获取和未扫码轮询通过，确认登录仍待主人验收；
-不能据此宣称 2156 已解决，也不会自动刷新二维码或重试确认。
+不借用指纹。修正 GET 后，主人已点击手机确认，服务器仍业务拒绝 2156，未签发
+Session/票据。随后补齐此前遗漏的匿名 TTWid 初始化：macOS 纯 Node 实测 check
+返回 1002、一次 register 返回 0 并下发 ttwid，不含登录 Session。此版本未再次
+生成二维码或确认登录；不能据此宣称 2156 已解决，也不会自动刷新或重试确认。
