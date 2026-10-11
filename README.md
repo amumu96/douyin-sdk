@@ -494,7 +494,10 @@ HTTP 200 不等于已登录。`NodeWebProfileClient.verify()` 仍为不保存状
 确认后只有新 Session 对应的新票据且只读 self UID 与指定账号一致，才返回候选
 `WebProfileSession`；此类不保存认证文件、不上传图片、不提交资料。部署方须在
 账号串行租约/CAS 下自行提升候选状态。网页 QR 获取与未扫码轮询已在 macOS 纯 Node
-实测；确认登录后的真实账号验收仍待主人扫码，离线夹具不代表该步骤通过。
+实测。2026-10-11 08:29–08:31，专用账号由主人扫码确认，新 Session/票据绑定与
+独立同账号 self 校验通过；部署方在租约/CAS 下提升认证并刷新同 Session 证书，
+重启后只读 self 再次通过。此为 macOS 真账号网页登录证据，非头像写入验收；
+Windows 未验收，离线夹具也不代表该步骤。
 
 显式网页登录请求也附带 provider 公钥的 `bd-ticket-guard-web-sign-type=0` 和账号独占
 Node Dtrait（仅实际 Node 特征），客户端守卫 Cookie 按官方 Cookie helper 做 URI 编码。
@@ -504,5 +507,6 @@ GET 接口、3.4.9 参数及 p_no 完整性摘要；next 仅放入 URL，不参�
 未安装的浏览器安全组件版本取 0，浏览器采集字段使用官方不可用时的空对象回退，
 不借用指纹。修正 GET 后，主人已点击手机确认，服务器仍业务拒绝 2156，未签发
 Session/票据。随后补齐此前遗漏的匿名 TTWid 初始化：macOS 纯 Node 实测 check
-返回 1002、一次 register 返回 0 并下发 ttwid，不含登录 Session。此版本未再次
-生成二维码或确认登录；不能据此宣称 2156 已解决，也不会自动刷新或重试确认。
+返回 1002、一次 register 返回 0 并下发匿名 ttwid。随后主人确认的新 QR 流程
+已返回 confirmed、签发新 Session/票据并通过同账号 self。早期 2156 的唯一成因
+仍无法确定，头像 POST 403 须独立验收；不会自动刷新二维码或重试确认/未知写入。
